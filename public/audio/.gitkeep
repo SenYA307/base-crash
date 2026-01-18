@@ -1,0 +1,7 @@
+# Audio placeholder directory
+# TODO: Add actual audio files:
+# - bgm.mp3 (background music, looping)
+# - swap.mp3 (tile swap sound)
+# - match.mp3 (match clear sound)
+# - cascade.mp3 (cascade bonus sound)
+# - gameover.mp3 (game over sound)

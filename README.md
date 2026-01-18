@@ -1,36 +1,62 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Base Crash
 
-## Getting Started
+Base Crash is a Base Mini App match-3 game with wallet auth, leaderboard, and hint purchases.
 
-First, run the development server:
+## Local Development
 
 ```bash
+npm install
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open [http://localhost:3000](http://localhost:3000).
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Production Environment Variables
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+Set these in Vercel (Project → Settings → Environment Variables):
 
-## Learn More
+```
+TURSO_DATABASE_URL=
+TURSO_AUTH_TOKEN=
+AUTH_TOKEN_SECRET=
+HINTS_PAYMENT_SECRET=
+TREASURY_ADDRESS=0x87AA66FB877c508420D77A3f7D1D5020b4d1A8f9
+BASE_RPC_URL=
+HINTS_PRICE_WEI=
+ETH_USD_FEED_ADDRESS=
+NEXT_PUBLIC_APP_URL=https://your-domain.com
+MINIAPP_ASSOC_HEADER=
+MINIAPP_ASSOC_PAYLOAD=
+MINIAPP_ASSOC_SIGNATURE=
+```
 
-To learn more about Next.js, take a look at the following resources:
+Notes:
+- `ETH_USD_FEED_ADDRESS` is optional if you prefer `HINTS_PRICE_WEI`.
+- `NEXT_PUBLIC_APP_URL` is used for OpenGraph + mini app embed metadata.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## Deploy to Vercel
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+1. Create a Turso database and obtain `TURSO_DATABASE_URL` + `TURSO_AUTH_TOKEN`.
+2. Add all env vars above to Vercel.
+3. Deploy the app.
 
-## Deploy on Vercel
+## Base Mini App Packaging
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+1. Use Base Build **Account association tool** to generate:
+   - `MINIAPP_ASSOC_HEADER`
+   - `MINIAPP_ASSOC_PAYLOAD`
+   - `MINIAPP_ASSOC_SIGNATURE`
+2. Set these in Vercel env vars.
+3. Ensure the manifest is accessible at:
+   - `https://<your-domain>/.well-known/farcaster.json`
+4. Use Base Build **Preview tool** to validate the manifest + embed metadata.
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+### Manifest & Assets
+
+- Manifest is served dynamically at `/.well-known/farcaster.json`.
+- Placeholder assets live in:
+  - `public/assets/miniapp/icon.svg`
+  - `public/assets/miniapp/splash.svg`
+  - `public/assets/miniapp/og.svg`
+
+Replace with real images before launch.
