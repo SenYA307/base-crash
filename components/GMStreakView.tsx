@@ -58,6 +58,9 @@ function triggerConfetti(canvas: HTMLCanvasElement) {
   const maxFrames = 60;
 
   function animate() {
+    // Guard for TypeScript - ctx is checked above but closure doesn't narrow
+    if (!ctx) return;
+
     if (frame >= maxFrames) {
       ctx.clearRect(0, 0, canvas.width, canvas.height);
       return;
