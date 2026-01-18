@@ -44,7 +44,6 @@ import {
   playGameOver,
   isInitialized as isAudioInitialized,
 } from "@/lib/audio";
-import { normalizeSignature, logSignatureDebug } from "@/lib/signature";
 
 // Hint constants
 const HINT_COOLDOWN_MS = 12000;
@@ -305,39 +304,50 @@ export default function Home() {
         message: nonceData.messageToSign,
       });
 
-      // Debug logging (client-side, only when DEBUG_SIGN=true on window)
-      logSignatureDebug("client-raw", rawSignature);
+      // Build debug info (only included when DEBUG_SIGN is enabled)
+      const debugEnabled =
+        typeof window !== "undefined" &&
+        (window as unknown as Record<string, unknown>).DEBUG_SIGN === true;
 
-      // Normalize signature using shared robust normalizer
-      const normResult = normalizeSignature(rawSignature);
-      if (!normResult.ok) {
-      logSignatureDebug("client-normalize-failed", {
-        error: normResult.error,
-        kind: normResult.kind,
-        rawLength: normResult.rawLength,
-      });
-        throw new Error("Wallet returned an unsupported signature format. Please try again.");
-      }
+      // Cast to unknown for instanceof checks
+      const rawSig: unknown = rawSignature;
 
-      logSignatureDebug("client-normalized", {
-        kind: normResult.kind,
-        rawLength: normResult.rawLength,
-        normalizedLength: normResult.normalizedLength,
-        compactApplied: normResult.compactApplied,
-      });
+      const debugInfo = debugEnabled
+        ? {
+            rawType: typeof rawSig,
+            rawStringLen:
+              typeof rawSig === "string" ? rawSig.length : null,
+            rawStringPrefix:
+              typeof rawSig === "string"
+                ? rawSig.slice(0, 12)
+                : null,
+            isArrayBuffer: rawSig instanceof ArrayBuffer,
+            isUint8Array: rawSig instanceof Uint8Array,
+            keys:
+              rawSig && typeof rawSig === "object"
+                ? Object.keys(rawSig as object)
+                : null,
+          }
+        : undefined;
 
+      // ALWAYS send raw signature to server - server handles normalization
       const verifyRes = await fetch("/api/auth/verify", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           address,
-          signature: normResult.signature,
+          signature: rawSignature, // Send raw, unmodified
           nonce: nonceData.nonce,
+          debug: debugInfo,
         }),
       });
       const verifyData = await verifyRes.json();
       if (!verifyRes.ok) {
         const errMsg = verifyData.error || "Failed to verify signature";
+        // Show errorCode in debug mode
+        if (debugEnabled && verifyData.errorCode) {
+          console.log("[sign-in] Server error:", verifyData.errorCode, verifyData);
+        }
         // User-friendly message for signature format issues
         if (errMsg.includes("format") || errMsg.includes("length")) {
           throw new Error("Signature format not recognized. Please try again.");

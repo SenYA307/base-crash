@@ -1,6 +1,6 @@
 import crypto from "crypto";
 import { isAddress, verifyMessage } from "viem";
-import { normalizeSignature, logSignatureDebug } from "./signature";
+import { normalizeSignature } from "./signature";
 
 const NONCE_EXPIRY_MS = 10 * 60 * 1000;
 const TOKEN_EXPIRY_SECONDS = 7 * 24 * 60 * 60;
@@ -41,45 +41,91 @@ export function issueNonce(address: string) {
   return { nonce, issuedAt, messageToSign };
 }
 
+// Structured result type for verifySignature
+export type VerifyResult =
+  | {
+      ok: true;
+      kind: string;
+      compactApplied: boolean;
+    }
+  | {
+      ok: false;
+      error: string;
+      errorCode: string;
+      detectedKind: string;
+      rawLen: number | null;
+      normalizedLen: number | null;
+    };
+
 export async function verifySignature(params: {
   address: string;
   signature: unknown;
   nonce: string;
-}) {
+}): Promise<VerifyResult> {
   const { address, signature, nonce } = params;
+
+  // Validate address
   if (!isAddress(address)) {
-    throw new Error("Invalid address");
+    return {
+      ok: false,
+      error: "Invalid address",
+      errorCode: "INVALID_ADDRESS",
+      detectedKind: "n/a",
+      rawLen: null,
+      normalizedLen: null,
+    };
   }
+
+  // Validate nonce
   const entry = nonceStore.get(nonce);
   if (!entry) {
-    throw new Error("Nonce not found");
+    return {
+      ok: false,
+      error: "Nonce not found",
+      errorCode: "NONCE_NOT_FOUND",
+      detectedKind: "n/a",
+      rawLen: null,
+      normalizedLen: null,
+    };
   }
   if (entry.address !== address.toLowerCase()) {
-    throw new Error("Nonce address mismatch");
+    return {
+      ok: false,
+      error: "Nonce address mismatch",
+      errorCode: "NONCE_MISMATCH",
+      detectedKind: "n/a",
+      rawLen: null,
+      normalizedLen: null,
+    };
   }
   const issuedAtMs = Date.parse(entry.issuedAt);
   if (Number.isNaN(issuedAtMs) || Date.now() - issuedAtMs > NONCE_EXPIRY_MS) {
     nonceStore.delete(nonce);
-    throw new Error("Nonce expired");
+    return {
+      ok: false,
+      error: "Nonce expired",
+      errorCode: "NONCE_EXPIRED",
+      detectedKind: "n/a",
+      rawLen: null,
+      normalizedLen: null,
+    };
   }
 
-  // Debug logging (only when DEBUG_SIGN=1)
-  logSignatureDebug("server-verify-input", signature);
-
-  // Normalize signature (defense-in-depth - client should also normalize)
+  // Normalize signature (robust server-side handling)
   const normResult = normalizeSignature(signature);
+
   if (!normResult.ok) {
-    logSignatureDebug("server-verify-failed", { error: normResult.error, kind: normResult.kind });
-    throw new Error(`Signature format not recognized: ${normResult.error}`);
+    return {
+      ok: false,
+      error: `Signature format not recognized: ${normResult.error}`,
+      errorCode: "SIG_FORMAT",
+      detectedKind: normResult.kind,
+      rawLen: normResult.rawLength ?? null,
+      normalizedLen: null,
+    };
   }
 
-  logSignatureDebug("server-verify-normalized", {
-    kind: normResult.kind,
-    rawLength: normResult.rawLength,
-    normalizedLength: normResult.normalizedLength,
-    compactApplied: normResult.compactApplied,
-  });
-
+  // Build exact message that was signed
   const message = buildMessageToSign(address, nonce, entry.issuedAt);
   const typedAddress = address as `0x${string}`;
 
@@ -90,25 +136,39 @@ export async function verifySignature(params: {
       signature: normResult.signature,
     });
     if (!verified) {
-      throw new Error("Invalid signature");
+      nonceStore.delete(nonce);
+      return {
+        ok: false,
+        error: "Invalid signature",
+        errorCode: "INVALID_SIG",
+        detectedKind: normResult.kind,
+        rawLen: normResult.rawLength ?? null,
+        normalizedLen: normResult.normalizedLength ?? null,
+      };
     }
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err);
-    logSignatureDebug("server-verify-error", {
-      error: errMsg,
-      kind: normResult.kind,
-      rawLength: normResult.rawLength,
-      normalizedLength: normResult.normalizedLength,
-      compactApplied: normResult.compactApplied,
-    });
-    // Provide cleaner error for common issues
-    if (errMsg.includes("invalid signature length")) {
-      throw new Error("Signature format not recognized");
-    }
-    throw new Error(`Signature verification failed: ${errMsg}`);
+    nonceStore.delete(nonce);
+    return {
+      ok: false,
+      error: errMsg.includes("invalid signature length")
+        ? "Signature format not recognized"
+        : `Signature verification failed: ${errMsg}`,
+      errorCode: errMsg.includes("invalid signature length")
+        ? "SIG_FORMAT"
+        : "VERIFY_FAILED",
+      detectedKind: normResult.kind,
+      rawLen: normResult.rawLength ?? null,
+      normalizedLen: normResult.normalizedLength ?? null,
+    };
   }
+
   nonceStore.delete(nonce);
-  return true;
+  return {
+    ok: true,
+    kind: normResult.kind,
+    compactApplied: normResult.compactApplied ?? false,
+  };
 }
 
 type TokenPayload = {
