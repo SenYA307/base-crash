@@ -43,30 +43,33 @@ export async function POST(request: Request) {
 
     if (!result.ok) {
       // ALWAYS log failure details
-      console.log("[auth/verify] FAILED:", JSON.stringify({
+      const failureInfo = {
         errorCode: result.errorCode,
         detectedKind: result.detectedKind,
         rawLen: result.rawLen,
         normalizedLen: result.normalizedLen,
         error: result.error,
-      }));
+        hint: result.rawLen && result.rawLen > 132
+          ? "Oversized signature detected. Extraction was attempted but failed to find valid ECDSA signature."
+          : "Standard signature expected (132 or 130 chars for 0x-prefixed hex)",
+      };
+      console.log("[auth/verify] FAILED:", JSON.stringify(failureInfo));
       return NextResponse.json(
         {
-          error: result.error,
-          errorCode: result.errorCode,
-          detectedKind: result.detectedKind,
-          rawLen: result.rawLen,
-          normalizedLen: result.normalizedLen,
+          ok: false,
+          ...failureInfo,
         },
         { status: 400 }
       );
     }
 
     // Log success
-    console.log("[auth/verify] SUCCESS:", JSON.stringify({
+    const successInfo = {
       kind: result.kind,
       compactApplied: result.compactApplied,
-    }));
+      extracted: result.kind.includes("extracted"),
+    };
+    console.log("[auth/verify] SUCCESS:", JSON.stringify(successInfo));
 
     const tokenResponse = signAuthToken(address);
     return NextResponse.json(tokenResponse);

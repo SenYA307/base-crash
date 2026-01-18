@@ -153,6 +153,94 @@ function extractFromObject(obj: unknown): unknown {
 }
 
 /**
+ * Try to extract a valid 65 or 64 byte signature from a longer hex string.
+ * Smart wallets (EIP-6492, ERC-4337, Safe) often wrap signatures with extra data.
+ */
+function tryExtractSignature(hexStr: string): {
+  extracted: boolean;
+  signature?: `0x${string}`;
+  signatureAlt?: `0x${string}`;
+  strategy?: string;
+  extractedLen?: number;
+} {
+  // Remove 0x prefix for processing
+  const hex = hexStr.startsWith("0x") ? hexStr.slice(2) : hexStr;
+  
+  // Strategy 1: Last 130 chars (65 bytes) - signature appended at end
+  if (hex.length >= 130) {
+    const last130 = hex.slice(-130);
+    if (HEX_REGEX.test(last130)) {
+      // Check if it looks like a valid signature (v should be 27, 28, 0, or 1)
+      const vByte = parseInt(last130.slice(-2), 16);
+      if (vByte === 27 || vByte === 28 || vByte === 0 || vByte === 1) {
+        const sig = `0x${last130}` as `0x${string}`;
+        // If v is 0 or 1, normalize to 27/28
+        if (vByte === 0 || vByte === 1) {
+          const normalized = `0x${last130.slice(0, -2)}${(27 + vByte).toString(16).padStart(2, "0")}` as `0x${string}`;
+          return { extracted: true, signature: normalized, strategy: "last-130-vnorm", extractedLen: 132 };
+        }
+        return { extracted: true, signature: sig, strategy: "last-130", extractedLen: 132 };
+      }
+    }
+  }
+
+  // Strategy 2: Last 128 chars (64 bytes) - compact EIP-2098 appended at end
+  if (hex.length >= 128) {
+    const last128 = hex.slice(-128);
+    if (HEX_REGEX.test(last128)) {
+      const bytes = hexToBytes(last128);
+      const { signature, signatureAlt } = expandCompactSignature(bytes);
+      return { extracted: true, signature, signatureAlt, strategy: "last-128-compact", extractedLen: 130 };
+    }
+  }
+
+  // Strategy 3: Scan for 65-byte signature pattern starting after leading zeros
+  // Common in EIP-6492: lots of zeros followed by signature
+  const zeroMatch = hex.match(/^(0{8,})([0-9a-fA-F]{130})$/);
+  if (zeroMatch) {
+    const sigPart = zeroMatch[2];
+    const vByte = parseInt(sigPart.slice(-2), 16);
+    if (vByte === 27 || vByte === 28 || vByte === 0 || vByte === 1) {
+      const sig = vByte <= 1
+        ? `0x${sigPart.slice(0, -2)}${(27 + vByte).toString(16).padStart(2, "0")}` as `0x${string}`
+        : `0x${sigPart}` as `0x${string}`;
+      return { extracted: true, signature: sig, strategy: "after-zeros", extractedLen: 132 };
+    }
+  }
+
+  // Strategy 4: Skip first 32 bytes (64 hex chars) of padding and take next 65 bytes
+  // Common in some smart wallet formats
+  if (hex.length >= 64 + 130) {
+    const afterPadding = hex.slice(64, 64 + 130);
+    if (HEX_REGEX.test(afterPadding)) {
+      const vByte = parseInt(afterPadding.slice(-2), 16);
+      if (vByte === 27 || vByte === 28 || vByte === 0 || vByte === 1) {
+        const sig = vByte <= 1
+          ? `0x${afterPadding.slice(0, -2)}${(27 + vByte).toString(16).padStart(2, "0")}` as `0x${string}`
+          : `0x${afterPadding}` as `0x${string}`;
+        return { extracted: true, signature: sig, strategy: "skip-32-bytes", extractedLen: 132 };
+      }
+    }
+  }
+
+  // Strategy 5: Find any valid-looking 65-byte signature anywhere in the string
+  const sigPattern = /([0-9a-fA-F]{130})/g;
+  let match;
+  while ((match = sigPattern.exec(hex)) !== null) {
+    const candidate = match[1];
+    const vByte = parseInt(candidate.slice(-2), 16);
+    if (vByte === 27 || vByte === 28 || vByte === 0 || vByte === 1) {
+      const sig = vByte <= 1
+        ? `0x${candidate.slice(0, -2)}${(27 + vByte).toString(16).padStart(2, "0")}` as `0x${string}`
+        : `0x${candidate}` as `0x${string}`;
+      return { extracted: true, signature: sig, strategy: "scan-130", extractedLen: 132 };
+    }
+  }
+
+  return { extracted: false };
+}
+
+/**
  * Normalize any signature input to 0x-prefixed hex string (65 bytes = 130 hex chars + 0x)
  */
 export function normalizeSignature(input: unknown): NormalizeResult {
@@ -251,10 +339,25 @@ export function normalizeSignature(input: unknown): NormalizeResult {
             compactApplied,
           };
         }
+        // Oversized signature - try to extract valid signature from wrapper
+        if (hexPart.length > 130) {
+          const extraction = tryExtractSignature(sig);
+          if (extraction.extracted && extraction.signature) {
+            return {
+              ok: true,
+              signature: extraction.signature,
+              signatureAlt: extraction.signatureAlt,
+              kind: `hex-0x-extracted-${extraction.strategy}`,
+              rawLength: sig.length,
+              normalizedLength: extraction.signature.length,
+              compactApplied: extraction.strategy?.includes("compact") ?? false,
+            };
+          }
+        }
         return {
           ok: false,
-          error: `Unsupported signature length: ${hexPart.length / 2} bytes`,
-          kind: "hex-0x",
+          error: `Unsupported signature length: ${hexPart.length / 2} bytes (tried extraction)`,
+          kind: "hex-0x-oversized",
           rawLength: sig.length,
         };
       }
