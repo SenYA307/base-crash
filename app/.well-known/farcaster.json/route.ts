@@ -29,10 +29,12 @@ export async function GET(request: Request) {
       version: "1",
       name: "Base Crash",
       description: "Base Crash mini app game.",
-      iconUrl: `${origin}/assets/miniapp/icon.svg`,
+      iconUrl: `${origin}/assets/miniapp/icon.png`,
       splashImageUrl: `${origin}/assets/miniapp/splash.svg`,
       splashBackgroundColor: "#0b1020",
       homeUrl: origin,
+      primaryCategory: "games",
+      tags: ["match3", "base", "arcade", "crypto", "game"],
     },
     ...(hasAssociation ? {} : { noindex: true }),
   });
