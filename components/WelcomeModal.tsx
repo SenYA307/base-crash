@@ -55,7 +55,7 @@ export default function WelcomeModal({ onClose }: { onClose: () => void }) {
             <div>
               <h3 className="font-semibold text-white text-sm">How to Play</h3>
               <p className="text-xs text-[#9cc1ff] leading-relaxed">
-                Match 3 or more crypto tokens by swapping adjacent tiles. Create combos for bonus points!
+                Match 3+ tokens by swapping adjacent tiles. Chain combos for bonus points.
               </p>
             </div>
           </div>
@@ -68,7 +68,7 @@ export default function WelcomeModal({ onClose }: { onClose: () => void }) {
             <div>
               <h3 className="font-semibold text-white text-sm">Goals</h3>
               <p className="text-xs text-[#9cc1ff] leading-relaxed">
-                Reach the target score before running out of moves. Chain matches together for multipliers!
+                Reach the target score before moves run out. Build streaks for big multipliers.
               </p>
             </div>
           </div>
@@ -81,7 +81,7 @@ export default function WelcomeModal({ onClose }: { onClose: () => void }) {
             <div>
               <h3 className="font-semibold text-white text-sm">Leaderboard</h3>
               <p className="text-xs text-[#9cc1ff] leading-relaxed">
-                Compete with other players and climb the global leaderboard. Connect your wallet to save your progress!
+                Compete with others on the global leaderboard. Top 10 players receive rewards.
               </p>
             </div>
           </div>

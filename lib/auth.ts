@@ -1,42 +1,8 @@
 import crypto from "crypto";
 import { isAddress, verifyMessage } from "viem";
+import { normalizeSignature, logSignatureDebug } from "./signature";
 
 const NONCE_EXPIRY_MS = 10 * 60 * 1000;
-
-/**
- * Normalize signature to 0x-prefixed hex string.
- * Handles: hex with/without 0x, base64 strings.
- */
-function normalizeSignature(sig: string): `0x${string}` {
-  // Already 0x hex
-  if (sig.startsWith("0x")) {
-    return sig as `0x${string}`;
-  }
-
-  // Hex without 0x prefix (all hex chars, even length, 130+ chars for secp256k1)
-  if (/^[0-9a-fA-F]+$/.test(sig) && sig.length >= 130) {
-    return `0x${sig}`;
-  }
-
-  // Likely base64 - try to decode
-  try {
-    const decoded = Buffer.from(sig, "base64");
-    // Ethereum sig is 65 bytes (r: 32, s: 32, v: 1)
-    if (decoded.length === 65) {
-      return `0x${decoded.toString("hex")}`;
-    }
-  } catch {
-    // Not valid base64
-  }
-
-  // Fallback: assume it's hex without prefix
-  if (/^[0-9a-fA-F]+$/.test(sig)) {
-    return `0x${sig}`;
-  }
-
-  // Last resort: return as-is with 0x (will likely fail verification)
-  return `0x${sig}`;
-}
 const TOKEN_EXPIRY_SECONDS = 7 * 24 * 60 * 60;
 
 type NonceEntry = {
@@ -77,7 +43,7 @@ export function issueNonce(address: string) {
 
 export async function verifySignature(params: {
   address: string;
-  signature: string;
+  signature: unknown;
   nonce: string;
 }) {
   const { address, signature, nonce } = params;
@@ -97,21 +63,33 @@ export async function verifySignature(params: {
     throw new Error("Nonce expired");
   }
 
+  // Debug logging (only when DEBUG_SIGN=1)
+  logSignatureDebug("server-verify-input", signature);
+
+  // Normalize signature (defense-in-depth - client should also normalize)
+  const normResult = normalizeSignature(signature);
+  if (!normResult.ok) {
+    logSignatureDebug("server-verify-failed", { error: normResult.error, kind: normResult.kind });
+    throw new Error(`Signature format not recognized: ${normResult.error}`);
+  }
+
+  logSignatureDebug("server-verify-normalized", { kind: normResult.kind, len: normResult.signature.length });
+
   const message = buildMessageToSign(address, nonce, entry.issuedAt);
   const typedAddress = address as `0x${string}`;
-  const normalizedSig = normalizeSignature(signature);
 
   try {
     const verified = await verifyMessage({
       address: typedAddress,
       message,
-      signature: normalizedSig,
+      signature: normResult.signature,
     });
     if (!verified) {
       throw new Error("Invalid signature");
     }
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err);
+    logSignatureDebug("server-verify-error", { error: errMsg, kind: normResult.kind });
     // Provide cleaner error for common issues
     if (errMsg.includes("invalid signature length")) {
       throw new Error("Signature format not recognized");

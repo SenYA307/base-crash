@@ -44,6 +44,7 @@ import {
   playGameOver,
   isInitialized as isAudioInitialized,
 } from "@/lib/audio";
+import { normalizeSignature, logSignatureDebug } from "@/lib/signature";
 
 // Hint constants
 const HINT_COOLDOWN_MS = 12000;
@@ -304,34 +305,24 @@ export default function Home() {
         message: nonceData.messageToSign,
       });
 
-      // Normalize signature to 0x-prefixed hex string
-      let signature = rawSignature;
-      if (typeof signature === "string") {
-        if (!signature.startsWith("0x")) {
-          // Could be hex without prefix or base64
-          if (/^[0-9a-fA-F]+$/.test(signature) && signature.length >= 130) {
-            signature = `0x${signature}`;
-          } else {
-            // Try base64 decode
-            try {
-              const decoded = atob(signature);
-              const hex = Array.from(decoded, (c) =>
-                c.charCodeAt(0).toString(16).padStart(2, "0")
-              ).join("");
-              signature = `0x${hex}`;
-            } catch {
-              // Keep as-is
-            }
-          }
-        }
+      // Debug logging (client-side, only when DEBUG_SIGN=true on window)
+      logSignatureDebug("client-raw", rawSignature);
+
+      // Normalize signature using shared robust normalizer
+      const normResult = normalizeSignature(rawSignature);
+      if (!normResult.ok) {
+        logSignatureDebug("client-normalize-failed", { error: normResult.error, kind: normResult.kind });
+        throw new Error("Wallet returned an unsupported signature format. Please try again.");
       }
+
+      logSignatureDebug("client-normalized", { kind: normResult.kind });
 
       const verifyRes = await fetch("/api/auth/verify", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           address,
-          signature,
+          signature: normResult.signature,
           nonce: nonceData.nonce,
         }),
       });
