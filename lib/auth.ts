@@ -73,7 +73,12 @@ export async function verifySignature(params: {
     throw new Error(`Signature format not recognized: ${normResult.error}`);
   }
 
-  logSignatureDebug("server-verify-normalized", { kind: normResult.kind, len: normResult.signature.length });
+  logSignatureDebug("server-verify-normalized", {
+    kind: normResult.kind,
+    rawLength: normResult.rawLength,
+    normalizedLength: normResult.normalizedLength,
+    compactApplied: normResult.compactApplied,
+  });
 
   const message = buildMessageToSign(address, nonce, entry.issuedAt);
   const typedAddress = address as `0x${string}`;
@@ -89,7 +94,13 @@ export async function verifySignature(params: {
     }
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err);
-    logSignatureDebug("server-verify-error", { error: errMsg, kind: normResult.kind });
+    logSignatureDebug("server-verify-error", {
+      error: errMsg,
+      kind: normResult.kind,
+      rawLength: normResult.rawLength,
+      normalizedLength: normResult.normalizedLength,
+      compactApplied: normResult.compactApplied,
+    });
     // Provide cleaner error for common issues
     if (errMsg.includes("invalid signature length")) {
       throw new Error("Signature format not recognized");

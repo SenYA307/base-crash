@@ -11,8 +11,15 @@
  */
 
 export type NormalizeResult =
-  | { ok: true; signature: `0x${string}`; kind: string }
-  | { ok: false; error: string; kind: string };
+  | {
+      ok: true;
+      signature: `0x${string}`;
+      kind: string;
+      rawLength: number;
+      normalizedLength: number;
+      compactApplied: boolean;
+    }
+  | { ok: false; error: string; kind: string; rawLength?: number };
 
 const HEX_REGEX = /^[0-9a-fA-F]+$/;
 const BASE64_REGEX = /^[A-Za-z0-9+/=]+$/;
@@ -27,6 +34,38 @@ function bytesToHex(bytes: Uint8Array): `0x${string}` {
     hex += b.toString(16).padStart(2, "0");
   }
   return hex as `0x${string}`;
+}
+
+/**
+ * Convert hex string (no 0x) to bytes
+ */
+function hexToBytes(hex: string): Uint8Array {
+  const len = hex.length / 2;
+  const out = new Uint8Array(len);
+  for (let i = 0; i < len; i++) {
+    out[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+  }
+  return out;
+}
+
+/**
+ * Expand EIP-2098 compact signature (64 bytes) to full 65-byte signature
+ */
+function expandCompactSignature(bytes: Uint8Array): { signature: `0x${string}`; compactApplied: boolean } {
+  const r = bytes.slice(0, 32);
+  const vs = bytes.slice(32, 64);
+
+  const yParity = (vs[0] & 0x80) ? 1 : 0;
+  const s = new Uint8Array(vs);
+  s[0] &= 0x7f;
+  const v = 27 + yParity;
+
+  const full = new Uint8Array(65);
+  full.set(r, 0);
+  full.set(s, 32);
+  full[64] = v;
+
+  return { signature: bytesToHex(full), compactApplied: true };
 }
 
 /**
@@ -85,19 +124,32 @@ export function normalizeSignature(input: unknown): NormalizeResult {
   // Handle Uint8Array
   if (input instanceof Uint8Array) {
     if (input.length === 65) {
-      return { ok: true, signature: bytesToHex(input), kind: "Uint8Array" };
+      const signature = bytesToHex(input);
+      return {
+        ok: true,
+        signature,
+        kind: "Uint8Array",
+        rawLength: input.length,
+        normalizedLength: signature.length,
+        compactApplied: false,
+      };
     }
     if (input.length === 64) {
-      // Missing recovery byte - attempt with default v=27
-      const extended = new Uint8Array(65);
-      extended.set(input);
-      extended[64] = 27;
-      return { ok: true, signature: bytesToHex(extended), kind: "Uint8Array-64" };
+      const { signature, compactApplied } = expandCompactSignature(input);
+      return {
+        ok: true,
+        signature,
+        kind: "Uint8Array-compact",
+        rawLength: input.length,
+        normalizedLength: signature.length,
+        compactApplied,
+      };
     }
     return {
       ok: false,
       error: `Unsupported signature length: ${input.length} bytes`,
       kind: "Uint8Array",
+      rawLength: input.length,
     };
   }
 
@@ -126,7 +178,7 @@ export function normalizeSignature(input: unknown): NormalizeResult {
 
     // Empty string
     if (!sig) {
-      return { ok: false, error: "Signature is empty", kind: "string-empty" };
+      return { ok: false, error: "Signature is empty", kind: "string-empty", rawLength: 0 };
     }
 
     // Already 0x-prefixed hex
@@ -135,16 +187,32 @@ export function normalizeSignature(input: unknown): NormalizeResult {
       if (HEX_REGEX.test(hexPart)) {
         if (hexPart.length === 130) {
           // Perfect: 65 bytes
-          return { ok: true, signature: sig as `0x${string}`, kind: "hex-0x" };
+          return {
+            ok: true,
+            signature: sig as `0x${string}`,
+            kind: "hex-0x",
+            rawLength: sig.length,
+            normalizedLength: sig.length,
+            compactApplied: false,
+          };
         }
         if (hexPart.length === 128) {
-          // 64 bytes - missing recovery byte, add v=27
-          return { ok: true, signature: `0x${hexPart}1b` as `0x${string}`, kind: "hex-0x-64" };
+          const bytes = hexToBytes(hexPart);
+          const { signature, compactApplied } = expandCompactSignature(bytes);
+          return {
+            ok: true,
+            signature,
+            kind: "hex-0x-compact",
+            rawLength: sig.length,
+            normalizedLength: signature.length,
+            compactApplied,
+          };
         }
         return {
           ok: false,
           error: `Unsupported signature length: ${hexPart.length / 2} bytes`,
           kind: "hex-0x",
+          rawLength: sig.length,
         };
       }
     }
@@ -152,10 +220,27 @@ export function normalizeSignature(input: unknown): NormalizeResult {
     // Hex without 0x prefix
     if (HEX_REGEX.test(sig)) {
       if (sig.length === 130) {
-        return { ok: true, signature: `0x${sig}`, kind: "hex-raw" };
+        const signature = `0x${sig}` as `0x${string}`;
+        return {
+          ok: true,
+          signature,
+          kind: "hex-raw",
+          rawLength: sig.length,
+          normalizedLength: signature.length,
+          compactApplied: false,
+        };
       }
       if (sig.length === 128) {
-        return { ok: true, signature: `0x${sig}1b`, kind: "hex-raw-64" };
+        const bytes = hexToBytes(sig);
+        const { signature, compactApplied } = expandCompactSignature(bytes);
+        return {
+          ok: true,
+          signature,
+          kind: "hex-raw-compact",
+          rawLength: sig.length,
+          normalizedLength: signature.length,
+          compactApplied,
+        };
       }
       // Could be short hex - might be base64 that happens to look like hex
       // Try as hex if length is close to expected
@@ -164,6 +249,7 @@ export function normalizeSignature(input: unknown): NormalizeResult {
           ok: false,
           error: `Unsupported signature length: ${sig.length / 2} bytes`,
           kind: "hex-raw",
+          rawLength: sig.length,
         };
       }
       // Fall through to try base64
@@ -174,13 +260,26 @@ export function normalizeSignature(input: unknown): NormalizeResult {
       const bytes = decodeBase64(sig);
       if (bytes) {
         if (bytes.length === 65) {
-          return { ok: true, signature: bytesToHex(bytes), kind: "base64url" };
+          const signature = bytesToHex(bytes);
+          return {
+            ok: true,
+            signature,
+            kind: "base64url",
+            rawLength: sig.length,
+            normalizedLength: signature.length,
+            compactApplied: false,
+          };
         }
         if (bytes.length === 64) {
-          const extended = new Uint8Array(65);
-          extended.set(bytes);
-          extended[64] = 27;
-          return { ok: true, signature: bytesToHex(extended), kind: "base64url-64" };
+          const { signature, compactApplied } = expandCompactSignature(bytes);
+          return {
+            ok: true,
+            signature,
+            kind: "base64url-compact",
+            rawLength: sig.length,
+            normalizedLength: signature.length,
+            compactApplied,
+          };
         }
         // If decoded to something unexpected, might not be base64 at all
         if (bytes.length > 60 && bytes.length < 70) {
@@ -188,6 +287,7 @@ export function normalizeSignature(input: unknown): NormalizeResult {
             ok: false,
             error: `Unsupported signature length: ${bytes.length} bytes`,
             kind: "base64url",
+            rawLength: sig.length,
           };
         }
       }
@@ -198,19 +298,33 @@ export function normalizeSignature(input: unknown): NormalizeResult {
       const bytes = decodeBase64(sig);
       if (bytes) {
         if (bytes.length === 65) {
-          return { ok: true, signature: bytesToHex(bytes), kind: "base64" };
+          const signature = bytesToHex(bytes);
+          return {
+            ok: true,
+            signature,
+            kind: "base64",
+            rawLength: sig.length,
+            normalizedLength: signature.length,
+            compactApplied: false,
+          };
         }
         if (bytes.length === 64) {
-          const extended = new Uint8Array(65);
-          extended.set(bytes);
-          extended[64] = 27;
-          return { ok: true, signature: bytesToHex(extended), kind: "base64-64" };
+          const { signature, compactApplied } = expandCompactSignature(bytes);
+          return {
+            ok: true,
+            signature,
+            kind: "base64-compact",
+            rawLength: sig.length,
+            normalizedLength: signature.length,
+            compactApplied,
+          };
         }
         if (bytes.length > 60 && bytes.length < 70) {
           return {
             ok: false,
             error: `Unsupported signature length: ${bytes.length} bytes`,
             kind: "base64",
+            rawLength: sig.length,
           };
         }
       }
@@ -222,10 +336,11 @@ export function normalizeSignature(input: unknown): NormalizeResult {
         ok: false,
         error: `Unsupported signature length: ${sig.length / 2} bytes`,
         kind: "hex-unknown",
+        rawLength: sig.length,
       };
     }
 
-    return { ok: false, error: "Unrecognized signature format", kind: "string-unknown" };
+    return { ok: false, error: "Unrecognized signature format", kind: "string-unknown", rawLength: sig.length };
   }
 
   return { ok: false, error: `Unsupported input type: ${typeof input}`, kind: typeof input };
@@ -265,7 +380,20 @@ export function logSignatureDebug(label: string, input: unknown): void {
     info.preview = input.slice(0, 12) + (input.length > 12 ? "..." : "");
     info.startsWithHex = input.startsWith("0x");
   } else if (typeof input === "object") {
-    info.keys = Object.keys(input as object).slice(0, 5);
+    const data = input as Record<string, unknown>;
+    if (
+      "kind" in data ||
+      "rawLength" in data ||
+      "normalizedLength" in data ||
+      "compactApplied" in data
+    ) {
+      info.kind = data.kind;
+      info.rawLength = data.rawLength;
+      info.normalizedLength = data.normalizedLength;
+      info.compactApplied = data.compactApplied;
+    } else {
+      info.keys = Object.keys(input as object).slice(0, 5);
+    }
   }
 
   console.log(`[signature] ${label}:`, info);

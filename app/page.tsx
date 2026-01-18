@@ -311,11 +311,20 @@ export default function Home() {
       // Normalize signature using shared robust normalizer
       const normResult = normalizeSignature(rawSignature);
       if (!normResult.ok) {
-        logSignatureDebug("client-normalize-failed", { error: normResult.error, kind: normResult.kind });
+      logSignatureDebug("client-normalize-failed", {
+        error: normResult.error,
+        kind: normResult.kind,
+        rawLength: normResult.rawLength,
+      });
         throw new Error("Wallet returned an unsupported signature format. Please try again.");
       }
 
-      logSignatureDebug("client-normalized", { kind: normResult.kind });
+      logSignatureDebug("client-normalized", {
+        kind: normResult.kind,
+        rawLength: normResult.rawLength,
+        normalizedLength: normResult.normalizedLength,
+        compactApplied: normResult.compactApplied,
+      });
 
       const verifyRes = await fetch("/api/auth/verify", {
         method: "POST",
