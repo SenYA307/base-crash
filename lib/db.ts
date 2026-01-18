@@ -54,6 +54,14 @@ async function ensureInitialized(client: Client) {
       await client.execute(
         `CREATE INDEX IF NOT EXISTS idx_hint_purchases_tx_hash ON hint_purchases (tx_hash);`
       );
+
+      await client.execute(`
+        CREATE TABLE IF NOT EXISTS gm_streaks (
+          address TEXT PRIMARY KEY,
+          streak INTEGER NOT NULL DEFAULT 0,
+          last_checkin_utc INTEGER NOT NULL DEFAULT 0
+        );
+      `);
     })();
   }
 

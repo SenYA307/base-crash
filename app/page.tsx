@@ -22,6 +22,9 @@ import TokenGridPlaceholder, {
   type SwapPair,
 } from "@/components/TokenGridPlaceholder";
 import AudioControls from "@/components/AudioControls";
+import WelcomeModal from "@/components/WelcomeModal";
+import ComboOverlay from "@/components/ComboOverlay";
+import GMStreakView from "@/components/GMStreakView";
 import {
   createInitialState,
   applySwap,
@@ -48,7 +51,7 @@ const FREE_HINTS_PER_RUN = 3;
 const HINT_DISPLAY_MS = 1500;
 const HINTS_PACK_SIZE = 3;
 
-type View = "home" | "game" | "leaderboard";
+type View = "home" | "game" | "leaderboard" | "gm";
 
 type FloatingScore = {
   id: number;
@@ -103,6 +106,10 @@ export default function Home() {
   const [gameState, setGameState] = useState<GameState | null>(null);
   const [gameStartAt, setGameStartAt] = useState<number | null>(null);
   const [runId, setRunId] = useState<string>("");
+
+  // UI state
+  const [showWelcome, setShowWelcome] = useState(true);
+  const [comboMultiplier, setComboMultiplier] = useState(0);
 
   // Hint state
   const [hintCells, setHintCells] = useState<Coord[]>([]);
@@ -293,9 +300,31 @@ export default function Home() {
         throw new Error(nonceData.error || "Failed to get nonce");
       }
 
-      const signature = await signMessageAsync({
+      const rawSignature = await signMessageAsync({
         message: nonceData.messageToSign,
       });
+
+      // Normalize signature to 0x-prefixed hex string
+      let signature = rawSignature;
+      if (typeof signature === "string") {
+        if (!signature.startsWith("0x")) {
+          // Could be hex without prefix or base64
+          if (/^[0-9a-fA-F]+$/.test(signature) && signature.length >= 130) {
+            signature = `0x${signature}`;
+          } else {
+            // Try base64 decode
+            try {
+              const decoded = atob(signature);
+              const hex = Array.from(decoded, (c) =>
+                c.charCodeAt(0).toString(16).padStart(2, "0")
+              ).join("");
+              signature = `0x${hex}`;
+            } catch {
+              // Keep as-is
+            }
+          }
+        }
+      }
 
       const verifyRes = await fetch("/api/auth/verify", {
         method: "POST",
@@ -308,7 +337,12 @@ export default function Home() {
       });
       const verifyData = await verifyRes.json();
       if (!verifyRes.ok) {
-        throw new Error(verifyData.error || "Failed to verify signature");
+        const errMsg = verifyData.error || "Failed to verify signature";
+        // User-friendly message for signature format issues
+        if (errMsg.includes("format") || errMsg.includes("length")) {
+          throw new Error("Signature format not recognized. Please try again.");
+        }
+        throw new Error(errMsg);
       }
 
       setAuthToken(verifyData.token);
@@ -637,6 +671,38 @@ export default function Home() {
     [gameState, animationPhase, clearHint]
   );
 
+  // Handle swipe-to-swap from grid
+  const handleSwap = useCallback(
+    (from: Coord, to: Coord) => {
+      if (!gameState || gameState.moves <= 0 || animationPhase !== "idle") return;
+
+      if (!isAudioInitialized()) {
+        initAudio();
+        tryStartBgm();
+      }
+
+      clearHint();
+
+      const result = applySwap(gameState, from, to);
+      const isValid = result.steps.length > 0;
+
+      setPendingSwap({
+        from,
+        to,
+        originalState: gameState,
+        nextState: result.nextState,
+        steps: result.steps,
+        didReshuffle: result.didReshuffle,
+        isValid,
+      });
+
+      setSwapPair({ from, to });
+      setAnimationPhase("swapping");
+      playSwap();
+    },
+    [gameState, animationPhase, clearHint]
+  );
+
   const handleAnimationComplete = useCallback(() => {
     if (animationPhase === "swapping" && pendingSwap) {
       if (pendingSwap.isValid) {
@@ -652,6 +718,8 @@ export default function Home() {
           playMatch();
         } else if (pendingSwap.steps.length > 1) {
           playCascade();
+          // Trigger combo overlay
+          setComboMultiplier(pendingSwap.steps.length);
         }
 
         const allMovements: TileMovement[] = [];
@@ -857,8 +925,11 @@ export default function Home() {
   };
 
   return (
-    <div className="min-h-screen bg-[#0b1020] text-[#e6f0ff]">
-      <div className="mx-auto flex min-h-screen w-full max-w-md flex-col px-5 pb-10 pt-6">
+    <div className={`min-h-screen bg-[#0b1020] text-[#e6f0ff] ${view === "game" ? "scroll-lock" : ""}`}>
+      {/* Welcome modal (once per day) */}
+      {showWelcome && <WelcomeModal onClose={() => setShowWelcome(false)} />}
+
+      <div className="mx-auto flex min-h-screen w-full max-w-md flex-col px-5 pb-10 pt-6 safe-area-padding">
         <div className="flex items-center justify-between">
           <BaseHeader />
           {view === "game" && <AudioControls />}
@@ -924,6 +995,13 @@ export default function Home() {
                 onClick={() => setView("leaderboard")}
               >
                 Leaderboard
+              </button>
+              <button
+                className="h-12 w-full rounded-full border border-[#ff6b00]/50 bg-[#ff6b00]/20 text-sm font-semibold text-[#ffb366]"
+                type="button"
+                onClick={() => setView("gm")}
+              >
+                GM Streak ☀️
               </button>
             </div>
             <div className="mt-auto rounded-2xl border border-white/10 bg-[#0f1730] px-4 py-3 text-xs text-[#8aa8ff]">
@@ -1005,6 +1083,8 @@ export default function Home() {
               )}
             </div>
           </main>
+        ) : view === "gm" ? (
+          <GMStreakView authToken={authToken} onBack={() => setView("home")} />
         ) : gameState ? (
           <main className="mt-6 flex flex-1 flex-col gap-5">
             <GameHUD
@@ -1024,8 +1104,17 @@ export default function Home() {
                 swapPair={swapPair}
                 movements={movements}
                 onCellClick={handleCellClick}
+                onSwap={handleSwap}
                 onAnimationComplete={handleAnimationComplete}
               />
+
+              {/* Combo overlay */}
+              {comboMultiplier >= 2 && (
+                <ComboOverlay
+                  multiplier={comboMultiplier}
+                  onComplete={() => setComboMultiplier(0)}
+                />
+              )}
 
               {/* Floating score indicators */}
               {floatingScores.map((fs) => (

@@ -41,6 +41,9 @@ const MIN_DROP_DURATION = 180;
 const MAX_DROP_DURATION = 380;
 const EASING = "cubic-bezier(0.22, 1, 0.36, 1)";
 
+// Swipe settings
+const SWIPE_THRESHOLD = 22; // pixels - slightly reduced for responsiveness
+
 export type AnimationPhase =
   | "idle"
   | "swapping"
@@ -62,6 +65,7 @@ type TokenGridProps = {
   swapPair: SwapPair;
   movements: TileMovement[];
   onCellClick: (coord: Coord) => void;
+  onSwap?: (from: Coord, to: Coord) => void;
   onAnimationComplete: () => void;
 };
 
@@ -106,11 +110,109 @@ export default function TokenGridPlaceholder({
   swapPair,
   movements,
   onCellClick,
+  onSwap,
   onAnimationComplete,
 }: TokenGridProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [cellSize, setCellSize] = useState(0);
   const animationTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Swipe state
+  const swipeStartRef = useRef<{
+    x: number;
+    y: number;
+    coord: Coord;
+    pointerId: number;
+  } | null>(null);
+  const hasSwipedRef = useRef(false);
+  const [pressedCoord, setPressedCoord] = useState<Coord | null>(null);
+
+  const handlePointerDown = useCallback(
+    (e: React.PointerEvent, coord: Coord) => {
+      if (disabled || animationPhase !== "idle") return;
+
+      // Capture pointer for reliable tracking even if finger moves off element
+      (e.target as HTMLElement).setPointerCapture(e.pointerId);
+
+      swipeStartRef.current = {
+        x: e.clientX,
+        y: e.clientY,
+        coord,
+        pointerId: e.pointerId,
+      };
+      hasSwipedRef.current = false;
+      setPressedCoord(coord);
+    },
+    [disabled, animationPhase]
+  );
+
+  const handlePointerMove = useCallback(
+    (e: React.PointerEvent) => {
+      if (
+        !swipeStartRef.current ||
+        hasSwipedRef.current ||
+        disabled ||
+        animationPhase !== "idle"
+      )
+        return;
+
+      // Prevent any scroll while swiping
+      e.preventDefault();
+
+      const dx = e.clientX - swipeStartRef.current.x;
+      const dy = e.clientY - swipeStartRef.current.y;
+      const absDx = Math.abs(dx);
+      const absDy = Math.abs(dy);
+
+      if (absDx < SWIPE_THRESHOLD && absDy < SWIPE_THRESHOLD) return;
+
+      hasSwipedRef.current = true;
+      setPressedCoord(null);
+      const from = swipeStartRef.current.coord;
+      let to: Coord;
+
+      if (absDx > absDy) {
+        // Horizontal swipe
+        to = { row: from.row, col: from.col + (dx > 0 ? 1 : -1) };
+      } else {
+        // Vertical swipe
+        to = { row: from.row + (dy > 0 ? 1 : -1), col: from.col };
+      }
+
+      // Bounds check
+      if (
+        to.row >= 0 &&
+        to.row < GRID_SIZE &&
+        to.col >= 0 &&
+        to.col < GRID_SIZE
+      ) {
+        if (onSwap) {
+          onSwap(from, to);
+        }
+      }
+
+      swipeStartRef.current = null;
+    },
+    [disabled, animationPhase, onSwap]
+  );
+
+  const handlePointerUp = useCallback((e: React.PointerEvent) => {
+    // Release pointer capture
+    if (swipeStartRef.current?.pointerId === e.pointerId) {
+      try {
+        (e.target as HTMLElement).releasePointerCapture(e.pointerId);
+      } catch {
+        // Ignore if already released
+      }
+    }
+    swipeStartRef.current = null;
+    setPressedCoord(null);
+  }, []);
+
+  const handlePointerCancel = useCallback(() => {
+    swipeStartRef.current = null;
+    setPressedCoord(null);
+  }, []);
 
   // Calculate cell size
   useEffect(() => {
@@ -178,7 +280,11 @@ export default function TokenGridPlaceholder({
   return (
     <div
       ref={containerRef}
-      className="rounded-2xl border border-white/10 bg-[#0f1730] p-3 shadow-[0_20px_60px_rgba(0,0,0,0.35)] overflow-hidden"
+      className="rounded-2xl border border-white/10 bg-[#0f1730] p-3 shadow-[0_20px_60px_rgba(0,0,0,0.35)] overflow-hidden touch-none select-none"
+      onPointerMove={handlePointerMove}
+      onPointerUp={handlePointerUp}
+      onPointerLeave={handlePointerCancel}
+      onPointerCancel={handlePointerCancel}
     >
       <div
         className="grid gap-1"
@@ -256,19 +362,23 @@ export default function TokenGridPlaceholder({
                 animationPhase === "spawning") &&
                 movementMap.has(tile.id));
 
+            const isPressed =
+              pressedCoord?.row === rowIndex && pressedCoord?.col === colIndex;
+
             return (
               <button
                 key={tile.id}
                 type="button"
                 disabled={disabled || isAnimating}
-                onClick={() => onCellClick(coord)}
+                onClick={() => !hasSwipedRef.current && onCellClick(coord)}
+                onPointerDown={(e) => handlePointerDown(e, coord)}
                 className={`tile-cell aspect-square ${
                   shouldAnimate ? "" : "tile-animate"
                 } ${isSelected ? "tile-selected" : ""} ${
                   isAdjacentToSelected && !isSelected ? "tile-adjacent" : ""
                 } ${isHint ? "hint-highlight" : ""} ${
                   disabled || isAnimating ? "pointer-events-none" : ""
-                }`}
+                } ${isPressed ? "tile-pressed" : ""}`}
                 style={{
                   transform,
                   transition: shouldAnimate

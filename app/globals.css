@@ -119,6 +119,13 @@ body {
   transform: scale(1.08) translate3d(0, 0, 0);
 }
 
+/* Pressed state (swipe gesture active) */
+.tile-pressed {
+  transform: scale(0.95) translate3d(0, 0, 0);
+  opacity: 0.9;
+  transition: transform 50ms ease-out, opacity 50ms ease-out;
+}
+
 /* Adjacent highlight */
 .tile-adjacent {
   box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.4);
@@ -150,4 +157,58 @@ body {
 .tile-clearing {
   animation: tile-clear 200ms cubic-bezier(0.22, 1, 0.36, 1) forwards;
   pointer-events: none;
+}
+
+/* Safe area padding for mobile (notch, home indicator) */
+.safe-area-padding {
+  padding-top: env(safe-area-inset-top, 0);
+  padding-bottom: env(safe-area-inset-bottom, 0);
+  padding-left: env(safe-area-inset-left, 0);
+  padding-right: env(safe-area-inset-right, 0);
+}
+
+.safe-area-bottom {
+  padding-bottom: max(env(safe-area-inset-bottom, 0), 16px);
+}
+
+/* Scroll lock for game view */
+.scroll-lock {
+  overflow: hidden;
+  position: fixed;
+  width: 100%;
+  height: 100%;
+  touch-action: none;
+  overscroll-behavior: none;
+}
+
+/* Combo overlay animation */
+@keyframes combo-pop {
+  0% {
+    transform: scale(0.5);
+    opacity: 0;
+  }
+  20% {
+    transform: scale(1.2);
+    opacity: 1;
+  }
+  40% {
+    transform: scale(1);
+    opacity: 1;
+  }
+  80% {
+    transform: scale(1.05);
+    opacity: 1;
+  }
+  100% {
+    transform: scale(1);
+    opacity: 0;
+  }
+}
+
+.combo-overlay {
+  animation: combo-pop 1.2s ease-out forwards;
+}
+
+.combo-text {
+  text-shadow: 0 0 40px rgba(0, 82, 255, 0.8), 0 4px 20px rgba(0, 0, 0, 0.5);
 }
