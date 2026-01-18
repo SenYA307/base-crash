@@ -4,8 +4,6 @@ import { signAuthToken, verifySignature, type VerifyResult } from "@/lib/auth";
 export const runtime = "nodejs";
 
 export async function POST(request: Request) {
-  const debugEnabled = process.env.DEBUG_SIGN === "1";
-
   try {
     const body = await request.json();
     const address = body?.address as string | undefined;
@@ -20,38 +18,38 @@ export async function POST(request: Request) {
       );
     }
 
-    // Debug logging (only when DEBUG_SIGN=1) - never log full signature
-    if (debugEnabled) {
-      const sigMeta: Record<string, unknown> = {
-        rawType: typeof signature,
-      };
-      if (typeof signature === "string") {
-        sigMeta.rawLen = signature.length;
-        sigMeta.startsWith0x = signature.startsWith("0x");
-        sigMeta.prefix = signature.slice(0, 12) + "...";
-      } else if (signature instanceof Uint8Array) {
-        sigMeta.rawLen = signature.length;
-        sigMeta.isUint8Array = true;
-      } else if (signature && typeof signature === "object") {
-        sigMeta.keys = Object.keys(signature);
-      }
-      console.log("[auth/verify] Signature metadata:", sigMeta);
-      if (clientDebug) {
-        console.log("[auth/verify] Client debug:", clientDebug);
-      }
+    // ALWAYS log signature metadata to diagnose Base app issue
+    const sigMeta: Record<string, unknown> = {
+      rawType: typeof signature,
+    };
+    if (typeof signature === "string") {
+      sigMeta.rawLen = signature.length;
+      sigMeta.startsWith0x = signature.startsWith("0x");
+      sigMeta.prefix = signature.slice(0, 16) + "...";
+      sigMeta.suffix = "..." + signature.slice(-8);
+    } else if (signature instanceof Uint8Array) {
+      sigMeta.rawLen = signature.length;
+      sigMeta.isUint8Array = true;
+    } else if (signature && typeof signature === "object") {
+      sigMeta.keys = Object.keys(signature);
+      sigMeta.objectPreview = JSON.stringify(signature).slice(0, 100);
+    }
+    console.log("[auth/verify] Signature metadata:", JSON.stringify(sigMeta));
+    if (clientDebug) {
+      console.log("[auth/verify] Client debug:", JSON.stringify(clientDebug));
     }
 
     const result = await verifySignature({ address, signature, nonce });
 
     if (!result.ok) {
-      // Log failure details
-      if (debugEnabled) {
-        console.log("[auth/verify] Normalization failed:", {
-          errorCode: result.errorCode,
-          detectedKind: result.detectedKind,
-          rawLen: result.rawLen,
-        });
-      }
+      // ALWAYS log failure details
+      console.log("[auth/verify] FAILED:", JSON.stringify({
+        errorCode: result.errorCode,
+        detectedKind: result.detectedKind,
+        rawLen: result.rawLen,
+        normalizedLen: result.normalizedLen,
+        error: result.error,
+      }));
       return NextResponse.json(
         {
           error: result.error,
@@ -65,21 +63,17 @@ export async function POST(request: Request) {
     }
 
     // Log success
-    if (debugEnabled) {
-      console.log("[auth/verify] Success:", {
-        kind: result.kind,
-        compactApplied: result.compactApplied,
-      });
-    }
+    console.log("[auth/verify] SUCCESS:", JSON.stringify({
+      kind: result.kind,
+      compactApplied: result.compactApplied,
+    }));
 
     const tokenResponse = signAuthToken(address);
     return NextResponse.json(tokenResponse);
   } catch (error) {
     const message = (error as Error).message || "Verification failed";
 
-    if (debugEnabled) {
-      console.log("[auth/verify] Exception:", message);
-    }
+    console.log("[auth/verify] EXCEPTION:", message);
 
     // Enhanced error response with code
     const errorCode = message.includes("format") || message.includes("length")

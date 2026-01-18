@@ -304,31 +304,20 @@ export default function Home() {
         message: nonceData.messageToSign,
       });
 
-      // Build debug info (only included when DEBUG_SIGN is enabled)
-      const debugEnabled =
-        typeof window !== "undefined" &&
-        (window as unknown as Record<string, unknown>).DEBUG_SIGN === true;
-
       // Cast to unknown for instanceof checks
       const rawSig: unknown = rawSignature;
 
-      const debugInfo = debugEnabled
-        ? {
-            rawType: typeof rawSig,
-            rawStringLen:
-              typeof rawSig === "string" ? rawSig.length : null,
-            rawStringPrefix:
-              typeof rawSig === "string"
-                ? rawSig.slice(0, 12)
-                : null,
-            isArrayBuffer: rawSig instanceof ArrayBuffer,
-            isUint8Array: rawSig instanceof Uint8Array,
-            keys:
-              rawSig && typeof rawSig === "object"
-                ? Object.keys(rawSig as object)
-                : null,
-          }
-        : undefined;
+      // ALWAYS log signature info for debugging
+      const sigInfo = {
+        rawType: typeof rawSig,
+        rawStringLen: typeof rawSig === "string" ? rawSig.length : null,
+        rawStringPrefix: typeof rawSig === "string" ? rawSig.slice(0, 16) : null,
+        rawStringSuffix: typeof rawSig === "string" ? rawSig.slice(-8) : null,
+        isArrayBuffer: rawSig instanceof ArrayBuffer,
+        isUint8Array: rawSig instanceof Uint8Array,
+        keys: rawSig && typeof rawSig === "object" ? Object.keys(rawSig as object) : null,
+      };
+      console.log("[sign-in] Signature info:", JSON.stringify(sigInfo));
 
       // ALWAYS send raw signature to server - server handles normalization
       const verifyRes = await fetch("/api/auth/verify", {
@@ -338,16 +327,14 @@ export default function Home() {
           address,
           signature: rawSignature, // Send raw, unmodified
           nonce: nonceData.nonce,
-          debug: debugInfo,
+          debug: sigInfo,
         }),
       });
       const verifyData = await verifyRes.json();
+      console.log("[sign-in] Server response:", JSON.stringify(verifyData));
       if (!verifyRes.ok) {
         const errMsg = verifyData.error || "Failed to verify signature";
-        // Show errorCode in debug mode
-        if (debugEnabled && verifyData.errorCode) {
-          console.log("[sign-in] Server error:", verifyData.errorCode, verifyData);
-        }
+        console.log("[sign-in] Server error:", verifyData.errorCode, verifyData);
         // User-friendly message for signature format issues
         if (errMsg.includes("format") || errMsg.includes("length")) {
           throw new Error("Signature format not recognized. Please try again.");
