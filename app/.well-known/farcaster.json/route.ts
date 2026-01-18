@@ -12,18 +12,18 @@ export async function GET(request: Request) {
   const payload = process.env.MINIAPP_ASSOC_PAYLOAD;
   const signature = process.env.MINIAPP_ASSOC_SIGNATURE;
 
-  if (!header || !payload || !signature) {
-    return NextResponse.json(
-      { error: "Miniapp account association env vars are missing" },
-      { status: 500 }
+  const hasAssociation = Boolean(header && payload && signature);
+  if (!hasAssociation && process.env.NODE_ENV !== "production") {
+    console.warn(
+      "[miniapp] MINIAPP_ASSOC_* env vars missing; returning placeholder association"
     );
   }
 
   return NextResponse.json({
     accountAssociation: {
-      header,
-      payload,
-      signature,
+      header: header || "",
+      payload: payload || "",
+      signature: signature || "",
     },
     miniapp: {
       version: "1",
@@ -34,5 +34,6 @@ export async function GET(request: Request) {
       splashBackgroundColor: "#0b1020",
       homeUrl: origin,
     },
+    ...(hasAssociation ? {} : { noindex: true }),
   });
 }
