@@ -129,15 +129,32 @@ export async function verifySignature(params: {
   const message = buildMessageToSign(address, nonce, entry.issuedAt);
   const typedAddress = address as `0x${string}`;
 
-  // Try primary signature first
-  const signaturestoTry = [normResult.signature];
+  // Build list of all signatures to try
+  const signaturesToTry: Array<{ sig: `0x${string}`; strategy: string }> = [];
+  
+  // Add primary signature
+  signaturesToTry.push({ sig: normResult.signature, strategy: "primary" });
+  
+  // Add alternative (different v value)
   if (normResult.signatureAlt) {
-    signaturestoTry.push(normResult.signatureAlt);
+    signaturesToTry.push({ sig: normResult.signatureAlt, strategy: "alt-v" });
+  }
+  
+  // Add all extracted candidates if available
+  if (normResult.allCandidates) {
+    for (const c of normResult.allCandidates) {
+      // Avoid duplicates
+      if (!signaturesToTry.some(s => s.sig === c.sig)) {
+        signaturesToTry.push(c);
+      }
+    }
   }
 
   let lastError: string | null = null;
+  let triedCount = 0;
 
-  for (const sig of signaturestoTry) {
+  for (const { sig, strategy } of signaturesToTry) {
+    triedCount++;
     try {
       const verified = await verifyMessage({
         address: typedAddress,
@@ -147,18 +164,21 @@ export async function verifySignature(params: {
       if (verified) {
         // Success! Delete nonce and return
         nonceStore.delete(nonce);
+        console.log(`[auth] Signature verified with strategy: ${strategy} (tried ${triedCount}/${signaturesToTry.length})`);
         return {
           ok: true,
-          kind: normResult.kind,
+          kind: `${normResult.kind}:${strategy}`,
           compactApplied: normResult.compactApplied ?? false,
         };
       }
       lastError = "Invalid signature";
     } catch (err) {
       lastError = err instanceof Error ? err.message : String(err);
-      // Continue to try alternative signature if available
+      // Continue to try other signatures
     }
   }
+
+  console.log(`[auth] All ${triedCount} signature candidates failed. Last error: ${lastError}`);
 
   // All attempts failed
   nonceStore.delete(nonce);

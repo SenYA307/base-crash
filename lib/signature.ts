@@ -15,6 +15,7 @@ export type NormalizeResult =
       ok: true;
       signature: `0x${string}`;
       signatureAlt?: `0x${string}`; // Alternative signature with different v value
+      allCandidates?: Array<{ sig: `0x${string}`; strategy: string }>; // All extracted candidates
       kind: string;
       rawLength: number;
       normalizedLength: number;
@@ -155,89 +156,151 @@ function extractFromObject(obj: unknown): unknown {
 /**
  * Try to extract a valid 65 or 64 byte signature from a longer hex string.
  * Smart wallets (EIP-6492, ERC-4337, Safe) often wrap signatures with extra data.
+ * 
+ * Common formats for 450-char (224 bytes) signatures:
+ * - ABI-encoded: offset pointer (32) + length (32) + signature (65) + padding
+ * - EIP-6492: signature + factory address + init data + magic bytes
  */
 function tryExtractSignature(hexStr: string): {
   extracted: boolean;
-  signature?: `0x${string}`;
-  signatureAlt?: `0x${string}`;
+  signatures?: Array<{ sig: `0x${string}`; strategy: string }>;
   strategy?: string;
   extractedLen?: number;
 } {
   // Remove 0x prefix for processing
   const hex = hexStr.startsWith("0x") ? hexStr.slice(2) : hexStr;
   
-  // Strategy 1: Last 130 chars (65 bytes) - signature appended at end
+  const candidates: Array<{ sig: `0x${string}`; alt?: `0x${string}`; strategy: string; priority: number }> = [];
+
+  // Helper to normalize v byte
+  const normalizeV = (sigHex: string): `0x${string}` | null => {
+    if (sigHex.length !== 130) return null;
+    const vByte = parseInt(sigHex.slice(-2), 16);
+    // Valid v values: 0, 1, 27, 28
+    if (vByte === 27 || vByte === 28) {
+      return `0x${sigHex}` as `0x${string}`;
+    }
+    if (vByte === 0 || vByte === 1) {
+      return `0x${sigHex.slice(0, -2)}${(27 + vByte).toString(16).padStart(2, "0")}` as `0x${string}`;
+    }
+    // Also accept v=0x1b (27) or v=0x1c (28) anywhere in reasonable range
+    if (vByte >= 27 && vByte <= 35) {
+      // EIP-155 chain-specific v values, normalize
+      const parity = (vByte - 27) % 2;
+      return `0x${sigHex.slice(0, -2)}${(27 + parity).toString(16).padStart(2, "0")}` as `0x${string}`;
+    }
+    return null;
+  };
+
+  // Strategy 1: ABI-encoded signature
+  // Format: 32 bytes offset (0x40 = 64) + 32 bytes length (0x41 = 65) + 65 bytes sig
+  // At offset 64 (128 hex chars), check if it's 0x41 (65 in hex, padded to 32 bytes)
+  if (hex.length >= 128 + 64 + 130) {
+    // Skip first 32 bytes (offset pointer), read length at bytes 32-64
+    const lengthHex = hex.slice(64, 128);
+    const length = parseInt(lengthHex, 16);
+    if (length === 65) {
+      // Signature starts at byte 64 (128 hex chars)
+      const sigHex = hex.slice(128, 128 + 130);
+      const normalized = normalizeV(sigHex);
+      if (normalized) {
+        candidates.push({ sig: normalized, strategy: "abi-encoded-65", priority: 1 });
+      }
+    }
+  }
+
+  // Strategy 2: Skip leading zeros, find first non-zero byte, take 65 bytes from there
+  const firstNonZero = hex.search(/[1-9a-fA-F]/);
+  if (firstNonZero >= 0 && firstNonZero % 2 === 0) {
+    // Align to byte boundary
+    const startPos = firstNonZero;
+    if (hex.length >= startPos + 130) {
+      const sigHex = hex.slice(startPos, startPos + 130);
+      const normalized = normalizeV(sigHex);
+      if (normalized) {
+        candidates.push({ sig: normalized, strategy: "after-leading-zeros", priority: 2 });
+      }
+    }
+  }
+
+  // Strategy 3: Last 130 chars (65 bytes) - signature appended at end
   if (hex.length >= 130) {
     const last130 = hex.slice(-130);
-    if (HEX_REGEX.test(last130)) {
-      // Check if it looks like a valid signature (v should be 27, 28, 0, or 1)
-      const vByte = parseInt(last130.slice(-2), 16);
-      if (vByte === 27 || vByte === 28 || vByte === 0 || vByte === 1) {
-        const sig = `0x${last130}` as `0x${string}`;
-        // If v is 0 or 1, normalize to 27/28
-        if (vByte === 0 || vByte === 1) {
-          const normalized = `0x${last130.slice(0, -2)}${(27 + vByte).toString(16).padStart(2, "0")}` as `0x${string}`;
-          return { extracted: true, signature: normalized, strategy: "last-130-vnorm", extractedLen: 132 };
+    const normalized = normalizeV(last130);
+    if (normalized) {
+      candidates.push({ sig: normalized, strategy: "last-130", priority: 3 });
+    }
+  }
+
+  // Strategy 4: Try common offsets for padded signatures
+  // 32 bytes (64 chars), 64 bytes (128 chars), 96 bytes (192 chars)
+  for (const offset of [64, 128, 192]) {
+    if (hex.length >= offset + 130) {
+      const sigHex = hex.slice(offset, offset + 130);
+      const normalized = normalizeV(sigHex);
+      if (normalized) {
+        candidates.push({ sig: normalized, strategy: `offset-${offset / 2}`, priority: 4 });
+      }
+    }
+  }
+
+  // Strategy 5: Scan for any 65-byte sequence that looks like a signature
+  // r and s should be < secp256k1 order (starts with byte < 0xff usually)
+  for (let i = 0; i <= hex.length - 130; i += 2) {
+    const candidate = hex.slice(i, i + 130);
+    // Quick sanity check: first byte of r shouldn't be 00 (would be non-canonical)
+    // and v should be valid
+    const firstByte = parseInt(candidate.slice(0, 2), 16);
+    if (firstByte > 0 && firstByte < 0xff) {
+      const normalized = normalizeV(candidate);
+      if (normalized) {
+        // Avoid duplicates
+        if (!candidates.some(c => c.sig === normalized)) {
+          candidates.push({ sig: normalized, strategy: `scan-pos-${i / 2}`, priority: 5 });
         }
-        return { extracted: true, signature: sig, strategy: "last-130", extractedLen: 132 };
       }
     }
   }
 
-  // Strategy 2: Last 128 chars (64 bytes) - compact EIP-2098 appended at end
-  if (hex.length >= 128) {
-    const last128 = hex.slice(-128);
-    if (HEX_REGEX.test(last128)) {
-      const bytes = hexToBytes(last128);
-      const { signature, signatureAlt } = expandCompactSignature(bytes);
-      return { extracted: true, signature, signatureAlt, strategy: "last-128-compact", extractedLen: 130 };
-    }
-  }
-
-  // Strategy 3: Scan for 65-byte signature pattern starting after leading zeros
-  // Common in EIP-6492: lots of zeros followed by signature
-  const zeroMatch = hex.match(/^(0{8,})([0-9a-fA-F]{130})$/);
-  if (zeroMatch) {
-    const sigPart = zeroMatch[2];
-    const vByte = parseInt(sigPart.slice(-2), 16);
-    if (vByte === 27 || vByte === 28 || vByte === 0 || vByte === 1) {
-      const sig = vByte <= 1
-        ? `0x${sigPart.slice(0, -2)}${(27 + vByte).toString(16).padStart(2, "0")}` as `0x${string}`
-        : `0x${sigPart}` as `0x${string}`;
-      return { extracted: true, signature: sig, strategy: "after-zeros", extractedLen: 132 };
-    }
-  }
-
-  // Strategy 4: Skip first 32 bytes (64 hex chars) of padding and take next 65 bytes
-  // Common in some smart wallet formats
-  if (hex.length >= 64 + 130) {
-    const afterPadding = hex.slice(64, 64 + 130);
-    if (HEX_REGEX.test(afterPadding)) {
-      const vByte = parseInt(afterPadding.slice(-2), 16);
-      if (vByte === 27 || vByte === 28 || vByte === 0 || vByte === 1) {
-        const sig = vByte <= 1
-          ? `0x${afterPadding.slice(0, -2)}${(27 + vByte).toString(16).padStart(2, "0")}` as `0x${string}`
-          : `0x${afterPadding}` as `0x${string}`;
-        return { extracted: true, signature: sig, strategy: "skip-32-bytes", extractedLen: 132 };
+  // Strategy 6: Try EIP-2098 compact (64 bytes) at various offsets
+  for (const offset of [0, 64, 128, hex.length - 128]) {
+    if (offset >= 0 && hex.length >= offset + 128) {
+      const compactHex = hex.slice(offset, offset + 128);
+      if (HEX_REGEX.test(compactHex)) {
+        const bytes = hexToBytes(compactHex);
+        const { signature, signatureAlt } = expandCompactSignature(bytes);
+        candidates.push({ sig: signature, alt: signatureAlt, strategy: `compact-offset-${offset / 2}`, priority: 6 });
       }
     }
   }
 
-  // Strategy 5: Find any valid-looking 65-byte signature anywhere in the string
-  const sigPattern = /([0-9a-fA-F]{130})/g;
-  let match;
-  while ((match = sigPattern.exec(hex)) !== null) {
-    const candidate = match[1];
-    const vByte = parseInt(candidate.slice(-2), 16);
-    if (vByte === 27 || vByte === 28 || vByte === 0 || vByte === 1) {
-      const sig = vByte <= 1
-        ? `0x${candidate.slice(0, -2)}${(27 + vByte).toString(16).padStart(2, "0")}` as `0x${string}`
-        : `0x${candidate}` as `0x${string}`;
-      return { extracted: true, signature: sig, strategy: "scan-130", extractedLen: 132 };
+  if (candidates.length === 0) {
+    return { extracted: false };
+  }
+
+  // Sort by priority and return all candidates for the caller to try
+  candidates.sort((a, b) => a.priority - b.priority);
+  
+  // Return all unique signatures to try
+  const allSigs: Array<{ sig: `0x${string}`; strategy: string }> = [];
+  const seen = new Set<string>();
+  for (const c of candidates) {
+    if (!seen.has(c.sig)) {
+      seen.add(c.sig);
+      allSigs.push({ sig: c.sig, strategy: c.strategy });
+    }
+    if (c.alt && !seen.has(c.alt)) {
+      seen.add(c.alt);
+      allSigs.push({ sig: c.alt, strategy: c.strategy + "-alt" });
     }
   }
 
-  return { extracted: false };
+  return {
+    extracted: true,
+    signatures: allSigs,
+    strategy: allSigs[0]?.strategy,
+    extractedLen: 132,
+  };
 }
 
 /**
@@ -342,15 +405,19 @@ export function normalizeSignature(input: unknown): NormalizeResult {
         // Oversized signature - try to extract valid signature from wrapper
         if (hexPart.length > 130) {
           const extraction = tryExtractSignature(sig);
-          if (extraction.extracted && extraction.signature) {
+          if (extraction.extracted && extraction.signatures && extraction.signatures.length > 0) {
+            // Return the first candidate, with all others available for retry
+            const primary = extraction.signatures[0];
+            const alternatives = extraction.signatures.slice(1).map(s => s.sig);
             return {
               ok: true,
-              signature: extraction.signature,
-              signatureAlt: extraction.signatureAlt,
-              kind: `hex-0x-extracted-${extraction.strategy}`,
+              signature: primary.sig,
+              signatureAlt: alternatives[0], // First alternative for simple retry
+              allCandidates: extraction.signatures, // All candidates for exhaustive retry
+              kind: `hex-0x-extracted-${primary.strategy}`,
               rawLength: sig.length,
-              normalizedLength: extraction.signature.length,
-              compactApplied: extraction.strategy?.includes("compact") ?? false,
+              normalizedLength: primary.sig.length,
+              compactApplied: primary.strategy?.includes("compact") ?? false,
             };
           }
         }
