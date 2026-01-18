@@ -14,6 +14,7 @@ export type NormalizeResult =
   | {
       ok: true;
       signature: `0x${string}`;
+      signatureAlt?: `0x${string}`; // Alternative signature with different v value
       kind: string;
       rawLength: number;
       normalizedLength: number;
@@ -50,22 +51,61 @@ function hexToBytes(hex: string): Uint8Array {
 
 /**
  * Expand EIP-2098 compact signature (64 bytes) to full 65-byte signature
+ * Returns both possible signatures (v=27 and v=28) since recovery bit might be ambiguous
  */
-function expandCompactSignature(bytes: Uint8Array): { signature: `0x${string}`; compactApplied: boolean } {
+function expandCompactSignature(bytes: Uint8Array): {
+  signature: `0x${string}`;
+  signatureAlt: `0x${string}`;
+  compactApplied: boolean;
+  yParity: number;
+} {
   const r = bytes.slice(0, 32);
   const vs = bytes.slice(32, 64);
 
+  // EIP-2098: yParity is encoded in the highest bit of vs[0]
   const yParity = (vs[0] & 0x80) ? 1 : 0;
   const s = new Uint8Array(vs);
-  s[0] &= 0x7f;
+  s[0] &= 0x7f; // Clear the highest bit to get s
   const v = 27 + yParity;
+  const vAlt = 27 + (1 - yParity); // Alternative v value
 
   const full = new Uint8Array(65);
   full.set(r, 0);
   full.set(s, 32);
   full[64] = v;
 
-  return { signature: bytesToHex(full), compactApplied: true };
+  const fullAlt = new Uint8Array(65);
+  fullAlt.set(r, 0);
+  fullAlt.set(s, 32);
+  fullAlt[64] = vAlt;
+
+  return {
+    signature: bytesToHex(full),
+    signatureAlt: bytesToHex(fullAlt),
+    compactApplied: true,
+    yParity,
+  };
+}
+
+/**
+ * For 64-byte signatures without EIP-2098 encoding, try both v values
+ */
+function expand64ByteSignature(bytes: Uint8Array): {
+  signature: `0x${string}`;
+  signatureAlt: `0x${string}`;
+} {
+  const full27 = new Uint8Array(65);
+  full27.set(bytes, 0);
+  full27[64] = 27;
+
+  const full28 = new Uint8Array(65);
+  full28.set(bytes, 0);
+  full28[64] = 28;
+
+  return {
+    signature: bytesToHex(full27),
+    signatureAlt: bytesToHex(full28),
+  };
 }
 
 /**
@@ -135,10 +175,12 @@ export function normalizeSignature(input: unknown): NormalizeResult {
       };
     }
     if (input.length === 64) {
-      const { signature, compactApplied } = expandCompactSignature(input);
+      // Try EIP-2098 compact signature expansion
+      const { signature, signatureAlt, compactApplied } = expandCompactSignature(input);
       return {
         ok: true,
         signature,
+        signatureAlt,
         kind: "Uint8Array-compact",
         rawLength: input.length,
         normalizedLength: signature.length,
@@ -198,10 +240,11 @@ export function normalizeSignature(input: unknown): NormalizeResult {
         }
         if (hexPart.length === 128) {
           const bytes = hexToBytes(hexPart);
-          const { signature, compactApplied } = expandCompactSignature(bytes);
+          const { signature, signatureAlt, compactApplied } = expandCompactSignature(bytes);
           return {
             ok: true,
             signature,
+            signatureAlt,
             kind: "hex-0x-compact",
             rawLength: sig.length,
             normalizedLength: signature.length,
@@ -232,10 +275,11 @@ export function normalizeSignature(input: unknown): NormalizeResult {
       }
       if (sig.length === 128) {
         const bytes = hexToBytes(sig);
-        const { signature, compactApplied } = expandCompactSignature(bytes);
+        const { signature, signatureAlt, compactApplied } = expandCompactSignature(bytes);
         return {
           ok: true,
           signature,
+          signatureAlt,
           kind: "hex-raw-compact",
           rawLength: sig.length,
           normalizedLength: signature.length,
@@ -271,10 +315,11 @@ export function normalizeSignature(input: unknown): NormalizeResult {
           };
         }
         if (bytes.length === 64) {
-          const { signature, compactApplied } = expandCompactSignature(bytes);
+          const { signature, signatureAlt, compactApplied } = expandCompactSignature(bytes);
           return {
             ok: true,
             signature,
+            signatureAlt,
             kind: "base64url-compact",
             rawLength: sig.length,
             normalizedLength: signature.length,
@@ -309,10 +354,11 @@ export function normalizeSignature(input: unknown): NormalizeResult {
           };
         }
         if (bytes.length === 64) {
-          const { signature, compactApplied } = expandCompactSignature(bytes);
+          const { signature, signatureAlt, compactApplied } = expandCompactSignature(bytes);
           return {
             ok: true,
             signature,
+            signatureAlt,
             kind: "base64-compact",
             rawLength: sig.length,
             normalizedLength: signature.length,

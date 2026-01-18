@@ -129,45 +129,50 @@ export async function verifySignature(params: {
   const message = buildMessageToSign(address, nonce, entry.issuedAt);
   const typedAddress = address as `0x${string}`;
 
-  try {
-    const verified = await verifyMessage({
-      address: typedAddress,
-      message,
-      signature: normResult.signature,
-    });
-    if (!verified) {
-      nonceStore.delete(nonce);
-      return {
-        ok: false,
-        error: "Invalid signature",
-        errorCode: "INVALID_SIG",
-        detectedKind: normResult.kind,
-        rawLen: normResult.rawLength ?? null,
-        normalizedLen: normResult.normalizedLength ?? null,
-      };
-    }
-  } catch (err) {
-    const errMsg = err instanceof Error ? err.message : String(err);
-    nonceStore.delete(nonce);
-    return {
-      ok: false,
-      error: errMsg.includes("invalid signature length")
-        ? "Signature format not recognized"
-        : `Signature verification failed: ${errMsg}`,
-      errorCode: errMsg.includes("invalid signature length")
-        ? "SIG_FORMAT"
-        : "VERIFY_FAILED",
-      detectedKind: normResult.kind,
-      rawLen: normResult.rawLength ?? null,
-      normalizedLen: normResult.normalizedLength ?? null,
-    };
+  // Try primary signature first
+  const signaturestoTry = [normResult.signature];
+  if (normResult.signatureAlt) {
+    signaturestoTry.push(normResult.signatureAlt);
   }
 
+  let lastError: string | null = null;
+
+  for (const sig of signaturestoTry) {
+    try {
+      const verified = await verifyMessage({
+        address: typedAddress,
+        message,
+        signature: sig,
+      });
+      if (verified) {
+        // Success! Delete nonce and return
+        nonceStore.delete(nonce);
+        return {
+          ok: true,
+          kind: normResult.kind,
+          compactApplied: normResult.compactApplied ?? false,
+        };
+      }
+      lastError = "Invalid signature";
+    } catch (err) {
+      lastError = err instanceof Error ? err.message : String(err);
+      // Continue to try alternative signature if available
+    }
+  }
+
+  // All attempts failed
   nonceStore.delete(nonce);
   return {
-    ok: true,
-    kind: normResult.kind,
-    compactApplied: normResult.compactApplied ?? false,
+    ok: false,
+    error: lastError?.includes("invalid signature length")
+      ? "Signature format not recognized"
+      : `Signature verification failed: ${lastError}`,
+    errorCode: lastError?.includes("invalid signature length")
+      ? "SIG_FORMAT"
+      : "VERIFY_FAILED",
+    detectedKind: normResult.kind,
+    rawLen: normResult.rawLength ?? null,
+    normalizedLen: normResult.normalizedLength ?? null,
   };
 }
 
