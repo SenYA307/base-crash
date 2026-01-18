@@ -41,6 +41,7 @@ export default function RootLayout({
   return (
     <html lang="en">
       <head>
+        <meta name="base:app_id" content="696cfddff22fe462e74c1384" />
         <meta property="fc:miniapp" content="true" />
         <meta
           property="fc:miniapp:manifest"
