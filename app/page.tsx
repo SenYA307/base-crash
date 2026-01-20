@@ -552,7 +552,9 @@ export default function Home() {
       return;
     }
 
-    if (!isConnected) {
+    // Wallet must be connected for on-chain purchase
+    if (!isConnected || !address) {
+      showToast("Connect your wallet to buy hints");
       handleConnect();
       return;
     }
@@ -566,9 +568,23 @@ export default function Home() {
       return;
     }
 
+    // Auth token required for server-side verification
     if (!authToken) {
       showToast("Please sign in first");
       handleSignIn();
+      return;
+    }
+
+    // For hint purchases, we need wallet-based auth (not just FID)
+    // The server requires payload.address for on-chain tx verification
+    if (!authAddress) {
+      showToast("Please sign in with your wallet to buy hints");
+      // In mini app, user might be signed in via Farcaster but needs wallet sign too
+      if (isMiniApp) {
+        handleConnect();
+      } else {
+        handleSignIn();
+      }
       return;
     }
 
@@ -976,31 +992,45 @@ export default function Home() {
   };
 
   const getHintButtonContent = () => {
+    // In-progress states
     if (hintPurchaseState === "creating_intent") return "Preparing…";
     if (hintPurchaseState === "awaiting_signature") return "Sign transaction…";
     if (hintPurchaseState === "pending" || isTxConfirming) return "Confirming…";
     if (hintPurchaseState === "verifying") return "Verifying…";
     if (hintPurchaseState === "success") return "✓ Hints added!";
-    if (hintPurchaseState === "error") return "Retry purchase";
+    
+    // Only show "Retry" if there was an actual purchase error (not pre-requisite failure)
+    if (hintPurchaseState === "error" && purchaseError) {
+      return "Retry purchase";
+    }
 
+    // Has hints available
     if (remainingHints > 0) {
       return `Hint (${remainingHints})`;
     }
 
-    // Show buy option
-    if (isMiniApp) {
-      // Mini app: use Quick Auth, no wallet needed for auth
-      if (!isAuthed) return "Sign in (Farcaster)";
-      if (!isConnected) return "Connect wallet to buy";
-      if (!isOnBase) return "Switch to Base";
-    } else {
-      // Desktop: wallet auth
-      if (!isConnected) return "Connect to buy hints";
-      if (!isOnBase) return "Switch to Base";
-      if (!isAuthed) return "Sign in to buy";
+    // Need to buy hints - check prerequisites
+    // Step 1: Wallet connection (required for on-chain tx)
+    if (!isConnected) {
+      return "Connect wallet to buy";
     }
 
-    // Show price only if we have a valid intent
+    // Step 2: Correct chain
+    if (!isOnBase) {
+      return "Switch to Base";
+    }
+
+    // Step 3: Auth (for server-side verification)
+    if (!isAuthed) {
+      return isMiniApp ? "Sign in (Farcaster)" : "Sign in to buy";
+    }
+
+    // Step 4: For purchases, we need wallet-based auth (not just FID)
+    if (!authAddress && !isMiniApp) {
+      return "Sign in to buy";
+    }
+
+    // Ready to buy - show price
     if (purchaseIntent?.requiredWei) {
       try {
         const priceEth = formatEther(BigInt(purchaseIntent.requiredWei));
@@ -1016,41 +1046,33 @@ export default function Home() {
   };
 
   const handleHintButtonClick = () => {
+    // Use hint if available
     if (remainingHints > 0 && hintPurchaseState === "idle") {
       handleHint();
       return;
     }
 
-    // Handle purchase states
-    if (isMiniApp) {
-      // Mini app flow
-      if (!isAuthed) {
-        handleSignIn(); // Trigger Farcaster Quick Auth
-        return;
-      }
-      if (!isConnected) {
-        handleConnect(); // Connect wallet
-        return;
-      }
-    } else {
-      // Desktop flow
-      if (!isConnected) {
-        handleConnect();
-        return;
-      }
-      if (!isAuthed) {
-        handleSignIn();
-        return;
-      }
+    // Purchase flow - check prerequisites in order
+
+    // Step 1: Wallet connection (required for on-chain tx)
+    if (!isConnected) {
+      handleConnect();
+      return;
     }
 
-    // If on wrong chain, switch
+    // Step 2: Correct chain
     if (!isOnBase) {
       switchChain({ chainId: base.id });
       return;
     }
 
-    // Ready to buy
+    // Step 3: Auth
+    if (!isAuthed) {
+      handleSignIn();
+      return;
+    }
+
+    // Ready to buy - handleBuyHints has additional checks
     handleBuyHints();
   };
 
@@ -1309,12 +1331,21 @@ export default function Home() {
               </button>
             </div>
 
-            {/* Purchase error */}
-            {purchaseError && hintPurchaseState === "error" && (
-              <div className="rounded-xl border border-red-500/30 bg-red-500/10 px-4 py-2 text-sm text-red-300">
-                {purchaseError}
-              </div>
-            )}
+            {/* Purchase error - styled based on error type */}
+            {purchaseError && hintPurchaseState === "error" && (() => {
+              const isFriendly = purchaseError.toLowerCase().includes("wallet") ||
+                purchaseError.toLowerCase().includes("connect") ||
+                purchaseError.toLowerCase().includes("sign in");
+              return (
+                <div className={`rounded-xl px-4 py-2 text-sm ${
+                  isFriendly
+                    ? "border border-[#0052ff]/30 bg-[#0052ff]/10 text-[#6fa8ff]"
+                    : "border border-red-500/30 bg-red-500/10 text-red-300"
+                }`}>
+                  {purchaseError}
+                </div>
+              );
+            })()}
 
             {/* Toast */}
             {toast && (
