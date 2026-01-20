@@ -27,6 +27,11 @@ const ERROR_PATTERNS: Array<{ pattern: RegExp | string; message: string }> = [
 
   // Recipient errors (important for hint purchases)
   { pattern: /wrong recipient/i, message: "Payment was sent to the wrong address. Please try again" },
+  { pattern: /smart wallet/i, message: "Smart wallet payment couldn't be verified. Please retry or use a regular wallet" },
+  { pattern: /aa_internal_transfer/i, message: "Smart wallet payment couldn't be verified. Please retry or use a regular wallet" },
+  { pattern: /event_not_found/i, message: "Payment event not found. Please retry or contact support" },
+  { pattern: /run id mismatch/i, message: "Payment matched a different game run. Please retry" },
+  { pattern: /insufficient_payment/i, message: "Payment amount was too low. Please try again" },
 
   // Network errors
   { pattern: /network/i, message: "Network error. Please try again" },

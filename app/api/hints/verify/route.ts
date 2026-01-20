@@ -1,17 +1,23 @@
 import "@/lib/env";
 
 import { NextRequest, NextResponse } from "next/server";
-import { verifyIntentToken, verifyTransaction, HINTS_PACK_SIZE } from "@/lib/hints";
+import {
+  verifyIntentToken,
+  verifyTransaction,
+  verifyContractPurchase,
+  getHintsContractAddress,
+  HINTS_PACK_SIZE,
+  runIdToBytes32,
+} from "@/lib/hints";
 import { getDb } from "@/lib/db";
 
 export const runtime = "nodejs";
 
 export async function POST(request: NextRequest) {
   try {
-    // NO auth token required - we verify via intent token + on-chain tx.from
+    // NO auth token required - we verify via intent token + on-chain event/tx
     const body = await request.json();
     const { intentToken, txHash } = body;
-    // address is optional - we'll use tx.from from blockchain as authoritative
 
     if (!intentToken || !txHash) {
       return NextResponse.json({ error: "Missing fields" }, { status: 400 });
@@ -26,13 +32,37 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Verify transaction on chain FIRST to get actual sender
-    // This is authoritative - smart wallets may have different tx.from than UI address
-    const verification = await verifyTransaction({
-      txHash,
-      expectedTo: intent.treasuryAddress,
-      minValue: BigInt(intent.requiredWei),
-    });
+    const contractAddress = intent.contractAddress || getHintsContractAddress();
+    let verification;
+    const debugPay = process.env.DEBUG_PAY === "1";
+
+    // Prefer contract-based verification if contract is configured
+    if (contractAddress) {
+      console.log(`[verify] Using contract verification: ${contractAddress.slice(0, 10)}...`);
+      if (debugPay) {
+        console.log("[DEBUG_PAY] Contract mode enabled", {
+          contractAddress,
+          intentRunId: intent.runId,
+          intentRunIdBytes32: intent.runIdBytes32,
+        });
+      }
+      const expectedRunIdBytes32 = intent.runIdBytes32
+        ? intent.runIdBytes32
+        : runIdToBytes32(intent.runId);
+      verification = await verifyContractPurchase({
+        txHash,
+        expectedRunIdBytes32,
+        minValue: BigInt(intent.requiredWei),
+      });
+    } else {
+      // Fallback to legacy direct transfer verification
+      console.log("[verify] Using legacy transfer verification (no contract configured)");
+      verification = await verifyTransaction({
+        txHash,
+        expectedTo: intent.treasuryAddress,
+        minValue: BigInt(intent.requiredWei),
+      });
+    }
 
     // Handle pending (not enough confirmations yet)
     if (verification.status === "pending") {
@@ -55,6 +85,7 @@ export async function POST(request: NextRequest) {
         reason: verification.reason,
         expected: verification.expected?.slice(0, 12),
         actual: verification.actual?.slice(0, 12),
+        hint: verification.hint,
       });
 
       return NextResponse.json(
@@ -67,14 +98,31 @@ export async function POST(request: NextRequest) {
             expected: verification.expected,
             actual: verification.actual,
           }),
+          ...(verification.reason === "event_not_found" && {
+            contractAddress: verification.expected,
+          }),
+          ...(verification.reason === "runid_mismatch" && {
+            expectedRunIdBytes32: verification.expected,
+            gotRunIdBytes32: verification.actual,
+          }),
+          ...(verification.reason === "insufficient_payment" && {
+            requiredWei: verification.expected,
+            gotWei: verification.actual,
+          }),
+          // Include hint for AA wallets without API key
+          ...(verification.reason === "aa_internal_transfer_unverified" && {
+            hint: verification.hint,
+            isSmartWallet: true,
+          }),
         },
         { status: 400 }
       );
     }
 
-    // Use actual sender from blockchain (authoritative for smart wallets)
-    const actualSender = verification.actualFrom;
-    console.log(`[verify] Tx ${txHash.slice(0, 10)}... from ${actualSender.slice(0, 10)}...`);
+    // Use buyer from event (if available) or tx.from as authoritative
+    const actualSender = verification.buyer || verification.actualFrom;
+    const usedEvent = verification.usedEvent || false;
+    console.log(`[verify] Tx ${txHash.slice(0, 10)}... buyer ${actualSender.slice(0, 10)}... (event: ${usedEvent})`);
 
     const db = await getDb();
 
@@ -194,6 +242,8 @@ export async function POST(request: NextRequest) {
       addedHints: HINTS_PACK_SIZE,
       purchasedHints,
       actualSender,
+      usedEvent,
+      usedInternalTransfer: verification.usedInternalTransfer || false,
     });
   } catch (error) {
     console.error("[verify] Error:", error);

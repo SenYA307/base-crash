@@ -1,6 +1,8 @@
 import crypto from "crypto";
-import { createPublicClient, http, parseAbi } from "viem";
+import { createPublicClient, http, parseAbi, decodeEventLog, type Log } from "viem";
 import { base } from "viem/chains";
+import { findInternalEthToAddress } from "./basescan";
+import BaseCrashHintsAbi from "./contracts/BaseCrashHints.abi.json";
 
 export const HINTS_PACK_SIZE = 3;
 export const FREE_HINTS_PER_RUN = 3;
@@ -17,6 +19,17 @@ export function getTreasuryAddress(): string {
     process.env.TREASURY_ADDRESS ||
     "0x87AA66FB877c508420D77A3f7D1D5020b4d1A8f9"
   );
+}
+
+// Hints contract address
+export function getHintsContractAddress(): string | null {
+  return process.env.HINTS_CONTRACT_ADDRESS || null;
+}
+
+export function runIdToBytes32(runId: string): string {
+  if (runId.startsWith("0x") && runId.length === 66) return runId.toLowerCase();
+  const hex = Buffer.from(runId).toString("hex");
+  return ("0x" + hex.padEnd(64, "0")).toLowerCase();
 }
 
 let hasWarnedSecretFallback = false;
@@ -107,9 +120,11 @@ export async function calculateRequiredWei(): Promise<bigint> {
 
 export type IntentPayload = {
   runId: string;
+  runIdBytes32?: string;
   address: string;
   requiredWei: string;
   treasuryAddress: string;
+  contractAddress?: string | null;
   packSize: number;
   iat: number;
   exp: number;
@@ -160,9 +175,183 @@ export function verifyIntentToken(token: string): IntentPayload | null {
 export const REQUIRED_CONFIRMATIONS = 1;
 
 export type TxVerifyResult =
-  | { status: "valid"; actualFrom: string; actualTo: string }
+  | { status: "valid"; actualFrom: string; actualTo: string; usedInternalTransfer?: boolean; usedEvent?: boolean; buyer?: string }
   | { status: "pending"; confirmations: number; required: number }
-  | { status: "invalid"; error: string; reason?: string; expected?: string; actual?: string };
+  | { status: "invalid"; error: string; reason?: string; expected?: string; actual?: string; hint?: string };
+
+/**
+ * Parsed HintsPurchased event
+ */
+export interface HintsPurchasedEvent {
+  buyer: string;
+  runId: string; // bytes32 as hex
+  amountWei: bigint;
+  hints: bigint;
+}
+
+/**
+ * Parse HintsPurchased events from transaction receipt logs
+ */
+export function parseHintsPurchasedEvents(logs: Log[]): HintsPurchasedEvent[] {
+  const events: HintsPurchasedEvent[] = [];
+  const contractAddress = getHintsContractAddress()?.toLowerCase();
+
+  for (const log of logs) {
+    // Only parse logs from our contract
+    if (contractAddress && log.address.toLowerCase() !== contractAddress) {
+      continue;
+    }
+
+    try {
+      const decoded = decodeEventLog({
+        abi: BaseCrashHintsAbi,
+        data: log.data,
+        topics: log.topics,
+      });
+
+      if (decoded.eventName === "HintsPurchased" && decoded.args) {
+        const args = decoded.args as unknown as {
+          buyer: string;
+          runId: string;
+          amountWei: bigint;
+          hints: bigint;
+        };
+        events.push({
+          buyer: args.buyer.toLowerCase(),
+          runId: args.runId,
+          amountWei: args.amountWei,
+          hints: args.hints,
+        });
+      }
+    } catch {
+      // Not a matching event, skip
+    }
+  }
+
+  return events;
+}
+
+/**
+ * Verify hint purchase via contract event (preferred method).
+ * Returns the buyer from the event, which is authoritative.
+ */
+export async function verifyContractPurchase(params: {
+  txHash: string;
+  expectedRunIdBytes32: string;
+  minValue: bigint;
+}): Promise<TxVerifyResult> {
+  const { txHash, expectedRunIdBytes32, minValue } = params;
+  const debugPay = process.env.DEBUG_PAY === "1";
+  const contractAddress = getHintsContractAddress();
+
+  if (!contractAddress) {
+    return {
+      status: "invalid",
+      error: "Hints contract not configured",
+      reason: "no_contract",
+    };
+  }
+
+  try {
+    const client = getBaseClient();
+
+    // Get transaction receipt
+    let receipt;
+    try {
+      receipt = await client.getTransactionReceipt({
+        hash: txHash as `0x${string}`,
+      });
+    } catch {
+      return { status: "pending", confirmations: 0, required: REQUIRED_CONFIRMATIONS };
+    }
+
+    if (!receipt) {
+      return { status: "pending", confirmations: 0, required: REQUIRED_CONFIRMATIONS };
+    }
+
+    if (receipt.status !== "success") {
+      return { status: "invalid", error: "Transaction failed", reason: "tx_failed" };
+    }
+
+    // Parse HintsPurchased events from logs
+    const events = parseHintsPurchasedEvents(receipt.logs as Log[]);
+
+    if (debugPay) {
+      console.log("[DEBUG_PAY] Contract verification:", {
+        txHash: txHash.slice(0, 12) + "...",
+        logsCount: receipt.logs.length,
+        eventsFound: events.length,
+        expectedRunId: expectedRunIdBytes32.slice(0, 12) + "...",
+      });
+    }
+
+    if (events.length === 0) {
+      return {
+        status: "invalid",
+        error: "No HintsPurchased event found",
+        reason: "event_not_found",
+        expected: contractAddress,
+      };
+    }
+
+    const expectedRunIdLower = expectedRunIdBytes32.toLowerCase();
+    const matchingRunEvents = events.filter(
+      (e) => e.runId.toLowerCase() === expectedRunIdLower
+    );
+
+    if (matchingRunEvents.length === 0) {
+      if (debugPay) {
+        console.log("[DEBUG_PAY] RunId mismatch:", {
+          expectedRunId: expectedRunIdLower,
+          events: events.map((e) => e.runId),
+        });
+      }
+      return {
+        status: "invalid",
+        error: "Run ID mismatch",
+        reason: "runid_mismatch",
+        expected: expectedRunIdBytes32,
+        actual: events[0]?.runId ?? "unknown",
+      };
+    }
+
+    const matchingEvent = matchingRunEvents.find((e) => e.amountWei >= minValue);
+
+    if (!matchingEvent) {
+      if (debugPay) {
+        console.log("[DEBUG_PAY] Insufficient payment:", {
+          required: minValue.toString(),
+          got: matchingRunEvents.map((e) => e.amountWei.toString()),
+        });
+      }
+      return {
+        status: "invalid",
+        error: "Insufficient payment",
+        reason: "insufficient_payment",
+        expected: minValue.toString(),
+        actual: matchingRunEvents[0]?.amountWei.toString() ?? "0",
+      };
+    }
+
+    // Check confirmations
+    const currentBlock = await client.getBlockNumber();
+    const confirmations = Number(currentBlock - receipt.blockNumber);
+    if (confirmations < REQUIRED_CONFIRMATIONS) {
+      return { status: "pending", confirmations, required: REQUIRED_CONFIRMATIONS };
+    }
+
+    return {
+      status: "valid",
+      actualFrom: matchingEvent.buyer,
+      actualTo: contractAddress.toLowerCase(),
+      usedEvent: true,
+      buyer: matchingEvent.buyer,
+    };
+  } catch (error) {
+    console.error("[Hints] Contract verify error:", error);
+    return { status: "invalid", error: "Verification failed", reason: "exception" };
+  }
+}
 
 /**
  * Verify transaction on Base chain.
@@ -228,29 +417,75 @@ export async function verifyTransaction(params: {
         receiptTo: receipt.to ? receipt.to.slice(0, 12) + "..." : "null",
         actualTo: actualTo.slice(0, 12) + "...",
         expectedTo: expectedToLower.slice(0, 12) + "...",
-        match: actualTo === expectedToLower,
+        txValue: tx.value.toString(),
+        minValue: minValue.toString(),
+        directMatch: actualTo === expectedToLower,
       });
     }
 
-    // Verify to address (case-insensitive)
-    if (!actualTo || actualTo !== expectedToLower) {
-      return {
-        status: "invalid",
-        error: "Wrong recipient",
-        reason: "wrong_recipient",
-        expected: expectedTo,
-        actual: actualTo || "unknown",
-      };
+    // Check if direct transfer to treasury
+    const isDirectTransfer = actualTo === expectedToLower;
+    let usedInternalTransfer = false;
+    let verifiedValue = tx.value;
+
+    if (!isDirectTransfer) {
+      // Not a direct transfer - try AA/smart wallet fallback via internal transactions
+      if (debugPay) {
+        console.log("[DEBUG_PAY] Direct transfer mismatch, checking internal transactions...");
+      }
+
+      const internalResult = await findInternalEthToAddress(txHash, expectedTo);
+
+      if (internalResult === null) {
+        // BaseScan API key not configured - can't verify internal transfers
+        return {
+          status: "invalid",
+          error: "Wrong recipient (smart wallet)",
+          reason: "aa_internal_transfer_unverified",
+          expected: expectedTo,
+          actual: actualTo || "unknown",
+          hint: "Set BASESCAN_API_KEY to verify smart wallet payments, or use an EOA wallet",
+        };
+      }
+
+      if (!internalResult.found || internalResult.totalWei < minValue) {
+        // No sufficient internal transfer found
+        if (debugPay) {
+          console.log("[DEBUG_PAY] No sufficient internal transfer found:", {
+            found: internalResult.found,
+            totalWei: internalResult.totalWei.toString(),
+            minValue: minValue.toString(),
+          });
+        }
+        return {
+          status: "invalid",
+          error: "Wrong recipient",
+          reason: "wrong_recipient",
+          expected: expectedTo,
+          actual: actualTo || "unknown",
+        };
+      }
+
+      // Found sufficient internal transfer to treasury
+      usedInternalTransfer = true;
+      verifiedValue = internalResult.totalWei;
+
+      if (debugPay) {
+        console.log("[DEBUG_PAY] Verified via internal transfer:", {
+          transfers: internalResult.transfers,
+          totalWei: internalResult.totalWei.toString(),
+        });
+      }
     }
 
-    // Verify value
-    if (tx.value < minValue) {
+    // Verify value (for direct transfers)
+    if (!usedInternalTransfer && verifiedValue < minValue) {
       return {
         status: "invalid",
         error: "Insufficient payment",
         reason: "insufficient_value",
         expected: minValue.toString(),
-        actual: tx.value.toString(),
+        actual: verifiedValue.toString(),
       };
     }
 
@@ -261,7 +496,7 @@ export async function verifyTransaction(params: {
       return { status: "pending", confirmations, required: REQUIRED_CONFIRMATIONS };
     }
 
-    return { status: "valid", actualFrom, actualTo };
+    return { status: "valid", actualFrom, actualTo: expectedToLower, usedInternalTransfer };
   } catch (error) {
     console.error("[Hints] Verify tx error:", error);
     return { status: "invalid", error: "Verification failed", reason: "exception" };

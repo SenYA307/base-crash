@@ -12,7 +12,7 @@ import {
   useSwitchChain,
   useChainId,
 } from "wagmi";
-import { createPublicClient, http, formatEther } from "viem";
+import { createPublicClient, http, formatEther, encodeFunctionData } from "viem";
 import { mainnet, base } from "wagmi/chains";
 
 import BaseHeader from "@/components/BaseHeader";
@@ -126,6 +126,8 @@ export default function Home() {
     intentToken: string;
     requiredWei: string;
     treasuryAddress: string;
+    contractAddress?: string | null;
+    runIdBytes32?: string;
   } | null>(null);
   const [purchaseTxHash, setPurchaseTxHash] = useState<string | null>(null);
   const [purchaseError, setPurchaseError] = useState<string | null>(null);
@@ -600,16 +602,75 @@ export default function Home() {
         intentToken: data.intentToken,
         requiredWei: data.requiredWei,
         treasuryAddress: data.treasuryAddress,
+        contractAddress: data.contractAddress,
+        runIdBytes32: data.runIdBytes32,
       });
 
       setHintPurchaseState("awaiting_signature");
 
-      // Send transaction
-      sendTransaction({
-        to: data.treasuryAddress as `0x${string}`,
-        value: BigInt(data.requiredWei),
-        chainId: base.id,
-      });
+      // Prefer contract call when contractAddress is provided (single source of truth)
+      if (data.contractAddress) {
+        if (!data.runIdBytes32) {
+          setPurchaseError("Internal config mismatch");
+          setHintPurchaseState("error");
+          return;
+        }
+
+        // Contract-based purchase (works with smart wallets)
+        const callData = encodeFunctionData({
+          abi: [
+            {
+              type: "function",
+              name: "buyHints",
+              inputs: [{ name: "runId", type: "bytes32" }],
+              outputs: [],
+              stateMutability: "payable",
+            },
+          ],
+          functionName: "buyHints",
+          args: [data.runIdBytes32 as `0x${string}`],
+        });
+
+        const toAddress = data.contractAddress as `0x${string}`;
+        if (toAddress.toLowerCase() !== String(data.contractAddress).toLowerCase()) {
+          setPurchaseError("Internal config mismatch");
+          setHintPurchaseState("error");
+          return;
+        }
+
+        if (
+          typeof window !== "undefined" &&
+          (window as unknown as Record<string, unknown>).DEBUG_PAY === true
+        ) {
+          console.log("[DEBUG_PAY] Purchase mode: contract", {
+            to: toAddress,
+            runIdBytes32: data.runIdBytes32,
+          });
+        }
+
+        sendTransaction({
+          to: toAddress,
+          data: callData,
+          value: BigInt(data.requiredWei),
+          chainId: base.id,
+        });
+      } else {
+        // Legacy direct transfer (only if contractAddress is not configured)
+        if (
+          typeof window !== "undefined" &&
+          (window as unknown as Record<string, unknown>).DEBUG_PAY === true
+        ) {
+          console.log("[DEBUG_PAY] Purchase mode: legacy", {
+            to: data.treasuryAddress,
+          });
+        }
+
+        sendTransaction({
+          to: data.treasuryAddress as `0x${string}`,
+          value: BigInt(data.requiredWei),
+          chainId: base.id,
+        });
+      }
     } catch (error) {
       const friendlyMessage = formatWalletError(error);
       setPurchaseError(friendlyMessage);
@@ -670,9 +731,25 @@ export default function Home() {
           }
         }
 
-        // Handle 400 error
+        // Handle 400 error with friendly messages
         if (!res.ok) {
-          throw new Error(data.error || "Verification failed");
+          const reason = data?.reason as string | undefined;
+          let message = data?.error || "Verification failed";
+
+          if (reason === "event_not_found") {
+            message = "Payment event not found. Please retry or contact support.";
+          } else if (reason === "runid_mismatch") {
+            message = "Payment matched a different game run. Please retry.";
+          } else if (reason === "insufficient_payment") {
+            message = "Payment amount was too low. Please try again.";
+          } else if (reason === "aa_internal_transfer_unverified") {
+            message =
+              "This wallet uses a smart account. We couldn't verify the transfer. Please retry or contact support.";
+          }
+
+          setPurchaseError(message);
+          setHintPurchaseState("error");
+          return;
         }
 
         // Success - check if already processed (retry hit)
@@ -1282,11 +1359,13 @@ export default function Home() {
             </div>
 
             {/* Payment info when awaiting signature */}
-            {hintPurchaseState === "awaiting_signature" && purchaseIntent?.treasuryAddress && (
+            {hintPurchaseState === "awaiting_signature" && purchaseIntent && (
               <div className="rounded-xl border border-[#ff6b00]/30 bg-[#ff6b00]/10 px-3 py-2 text-xs text-[#ffb366]">
                 <div className="flex items-center justify-between">
-                  <span>Paying to:</span>
-                  <span className="font-mono">{shortAddress(purchaseIntent.treasuryAddress)}</span>
+                  <span>{purchaseIntent.contractAddress ? "Contract:" : "Paying to:"}</span>
+                  <span className="font-mono">
+                    {shortAddress(purchaseIntent.contractAddress || purchaseIntent.treasuryAddress)}
+                  </span>
                 </div>
                 {purchaseIntent.requiredWei && (
                   <div className="flex items-center justify-between mt-1">
@@ -1294,6 +1373,11 @@ export default function Home() {
                     <span className="font-mono">
                       {Number(formatEther(BigInt(purchaseIntent.requiredWei))).toFixed(5)} ETH
                     </span>
+                  </div>
+                )}
+                {purchaseIntent.contractAddress && (
+                  <div className="mt-1 text-[10px] opacity-70">
+                    Smart wallet compatible ✓
                   </div>
                 )}
               </div>

@@ -4,6 +4,8 @@ import { NextRequest, NextResponse } from "next/server";
 import {
   calculateRequiredWei,
   getTreasuryAddress,
+  getHintsContractAddress,
+  runIdToBytes32,
   signIntentToken,
   HINTS_PACK_SIZE,
   INTENT_EXPIRY_SECONDS,
@@ -28,12 +30,13 @@ export async function POST(request: NextRequest) {
       envLocalExists: fs.existsSync(envLocalPath),
       hasHintsSecret: Boolean(process.env.HINTS_PAYMENT_SECRET),
       hasAuthSecret: Boolean(process.env.AUTH_TOKEN_SECRET),
+      hasContractAddress: Boolean(process.env.HINTS_CONTRACT_ADDRESS),
     });
   }
 
   try {
     // Parse body - NO auth token required for hint purchases
-    // We verify ownership via on-chain tx.from matching the address
+    // We verify ownership via on-chain event or tx.from
     const body = await request.json();
     const { runId, address } = body;
 
@@ -48,15 +51,21 @@ export async function POST(request: NextRequest) {
     // Calculate price
     const requiredWei = await calculateRequiredWei();
     const treasuryAddress = getTreasuryAddress();
+    const contractAddress = getHintsContractAddress();
 
     const iat = Math.floor(Date.now() / 1000);
     const exp = iat + INTENT_EXPIRY_SECONDS;
 
+    // Convert runId to bytes32 for contract call
+    const runIdBytes32 = runIdToBytes32(runId);
+
     const intentPayload: IntentPayload = {
       runId,
+      runIdBytes32,
       address: address.toLowerCase(),
       requiredWei: requiredWei.toString(),
       treasuryAddress,
+      contractAddress: contractAddress || null,
       packSize: HINTS_PACK_SIZE,
       iat,
       exp,
@@ -70,6 +79,10 @@ export async function POST(request: NextRequest) {
       intentToken,
       requiredWei: requiredWei.toString(),
       treasuryAddress,
+      // Contract-based purchase (preferred)
+      contractAddress: contractAddress || null,
+      runIdBytes32,
+      // Legacy fields
       expiresAt: exp,
       packSize: HINTS_PACK_SIZE,
     });

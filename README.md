@@ -24,6 +24,8 @@ TREASURY_ADDRESS=0x87AA66FB877c508420D77A3f7D1D5020b4d1A8f9
 BASE_RPC_URL=
 HINTS_PRICE_WEI=
 ETH_USD_FEED_ADDRESS=
+HINTS_CONTRACT_ADDRESS=0x... (see "Deploy Hints Contract" below)
+BASESCAN_API_KEY= (optional, for legacy AA wallet fallback)
 NEXT_PUBLIC_APP_URL=https://your-domain.com
 MINIAPP_ASSOC_HEADER=
 MINIAPP_ASSOC_PAYLOAD=
@@ -34,11 +36,63 @@ Notes:
 - `ETH_USD_FEED_ADDRESS` is optional if you prefer `HINTS_PRICE_WEI`.
 - `NEXT_PUBLIC_APP_URL` is used for OpenGraph + mini app embed metadata.
 
+## Deploy Hints Contract (Required for Smart Wallet Support)
+
+The hints contract enables purchases from smart wallets (Base App account abstraction) by emitting on-chain events that the server can verify.
+
+### Prerequisites
+
+```bash
+cd contracts
+npm install
+```
+
+### Deploy to Base Mainnet
+
+```bash
+# Set environment variables
+export DEPLOYER_PRIVATE_KEY=0x... # Private key with ETH on Base
+export TREASURY_ADDRESS=0x87AA66FB877c508420D77A3f7D1D5020b4d1A8f9
+export HINTS_PRICE_WEI=333333333333333 # ~$1 at $3000 ETH
+export BASESCAN_API_KEY=... # Optional, for contract verification
+
+# Deploy
+npm run deploy
+```
+
+The script will output the deployed contract address. Add it to Vercel:
+
+```
+HINTS_CONTRACT_ADDRESS=0x...
+```
+
+### Deploy to Base Sepolia (Testnet)
+
+```bash
+export BASE_SEPOLIA_RPC_URL=https://sepolia.base.org
+npm run deploy:testnet
+```
+
+### Contract Functions
+
+- `buyHints(bytes32 runId)` - Purchase hints (payable)
+- `setTreasury(address)` - Update treasury (owner only)
+- `setPrice(uint256)` - Update price in wei (owner only)
+
+### How It Works
+
+1. Frontend calls `buyHints(runIdBytes32)` with ETH payment
+2. Contract emits `HintsPurchased(buyer, runId, amount, hints)` event
+3. Contract forwards ETH to treasury
+4. Backend parses event logs to verify purchase
+5. Works with any wallet type (EOA, smart wallet, AA)
+
 ## Deploy to Vercel
 
 1. Create a Turso database and obtain `TURSO_DATABASE_URL` + `TURSO_AUTH_TOKEN`.
-2. Add all env vars above to Vercel.
-3. Deploy the app.
+2. Deploy the hints contract (see above) and get `HINTS_CONTRACT_ADDRESS`.
+3. Add all env vars above to Vercel.
+4. Deploy the app.
 
 ## Base Mini App Packaging
 

@@ -1,0 +1,102 @@
+[
+  {
+    "type": "constructor",
+    "inputs": [
+      { "name": "_treasury", "type": "address" },
+      { "name": "_priceWei", "type": "uint256" }
+    ]
+  },
+  {
+    "type": "function",
+    "name": "buyHints",
+    "inputs": [{ "name": "runId", "type": "bytes32" }],
+    "outputs": [],
+    "stateMutability": "payable"
+  },
+  {
+    "type": "function",
+    "name": "treasury",
+    "inputs": [],
+    "outputs": [{ "name": "", "type": "address" }],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "priceWei",
+    "inputs": [],
+    "outputs": [{ "name": "", "type": "uint256" }],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "packSize",
+    "inputs": [],
+    "outputs": [{ "name": "", "type": "uint256" }],
+    "stateMutability": "pure"
+  },
+  {
+    "type": "function",
+    "name": "setTreasury",
+    "inputs": [{ "name": "_treasury", "type": "address" }],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "setPrice",
+    "inputs": [{ "name": "_priceWei", "type": "uint256" }],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "owner",
+    "inputs": [],
+    "outputs": [{ "name": "", "type": "address" }],
+    "stateMutability": "view"
+  },
+  {
+    "type": "event",
+    "name": "HintsPurchased",
+    "inputs": [
+      { "name": "buyer", "type": "address", "indexed": true },
+      { "name": "runId", "type": "bytes32", "indexed": true },
+      { "name": "amountWei", "type": "uint256", "indexed": false },
+      { "name": "hints", "type": "uint256", "indexed": false }
+    ]
+  },
+  {
+    "type": "event",
+    "name": "TreasuryUpdated",
+    "inputs": [
+      { "name": "oldTreasury", "type": "address", "indexed": true },
+      { "name": "newTreasury", "type": "address", "indexed": true }
+    ]
+  },
+  {
+    "type": "event",
+    "name": "PriceUpdated",
+    "inputs": [
+      { "name": "oldPrice", "type": "uint256", "indexed": false },
+      { "name": "newPrice", "type": "uint256", "indexed": false }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "InsufficientPayment",
+    "inputs": [
+      { "name": "sent", "type": "uint256" },
+      { "name": "required", "type": "uint256" }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "TransferFailed",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "ZeroAddress",
+    "inputs": []
+  }
+]
