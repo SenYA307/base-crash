@@ -1,7 +1,6 @@
 import "@/lib/env";
 
 import { NextRequest, NextResponse } from "next/server";
-import { verifyAuthToken } from "@/lib/auth";
 import { verifyIntentToken, verifyTransaction, HINTS_PACK_SIZE } from "@/lib/hints";
 import { getDb } from "@/lib/db";
 
@@ -9,17 +8,7 @@ export const runtime = "nodejs";
 
 export async function POST(request: NextRequest) {
   try {
-    // Verify auth
-    const authHeader = request.headers.get("Authorization");
-    if (!authHeader?.startsWith("Bearer ")) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
-    const token = authHeader.slice(7);
-    const authPayload = verifyAuthToken(token);
-    if (!authPayload) {
-      return NextResponse.json({ error: "Invalid token" }, { status: 401 });
-    }
-
+    // NO auth token required - we verify via intent token + on-chain tx.from
     // Parse body
     const body = await request.json();
     const { intentToken, txHash, address } = body;
@@ -37,15 +26,10 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Verify address matches - hint purchases require wallet auth
-    if (!authPayload.address) {
-      return NextResponse.json({ error: "Wallet address required for hint verification" }, { status: 400 });
-    }
-    if (
-      intent.address.toLowerCase() !== address.toLowerCase() ||
-      authPayload.address.toLowerCase() !== address.toLowerCase()
-    ) {
-      return NextResponse.json({ error: "Address mismatch" }, { status: 400 });
+    // Verify address in request matches intent address
+    // On-chain verification will also check tx.from matches
+    if (intent.address.toLowerCase() !== address.toLowerCase()) {
+      return NextResponse.json({ error: "Address mismatch with intent" }, { status: 400 });
     }
 
     const db = await getDb();

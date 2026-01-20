@@ -1,7 +1,6 @@
 import "@/lib/env";
 
 import { NextRequest, NextResponse } from "next/server";
-import { verifyAuthToken } from "@/lib/auth";
 import {
   calculateRequiredWei,
   getTreasuryAddress,
@@ -33,23 +32,17 @@ export async function POST(request: NextRequest) {
   }
 
   try {
-    // Verify auth
-    const authHeader = request.headers.get("Authorization");
-    if (!authHeader?.startsWith("Bearer ")) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
-    const token = authHeader.slice(7);
-    const payload = verifyAuthToken(token);
-    if (!payload) {
-      return NextResponse.json({ error: "Invalid token" }, { status: 401 });
-    }
-
-    // Parse body
+    // Parse body - NO auth token required for hint purchases
+    // We verify ownership via on-chain tx.from matching the address
     const body = await request.json();
-    const { runId } = body;
+    const { runId, address } = body;
 
     if (!runId || typeof runId !== "string") {
       return NextResponse.json({ error: "Missing runId" }, { status: 400 });
+    }
+
+    if (!address || typeof address !== "string" || !address.startsWith("0x")) {
+      return NextResponse.json({ error: "Missing or invalid wallet address" }, { status: 400 });
     }
 
     // Calculate price
@@ -59,17 +52,9 @@ export async function POST(request: NextRequest) {
     const iat = Math.floor(Date.now() / 1000);
     const exp = iat + INTENT_EXPIRY_SECONDS;
 
-    // Hint purchases require a wallet address for on-chain verification
-    if (!payload.address) {
-      return NextResponse.json(
-        { error: "Wallet address required for hint purchase. Please connect your wallet." },
-        { status: 400 }
-      );
-    }
-
     const intentPayload: IntentPayload = {
       runId,
-      address: payload.address,
+      address: address.toLowerCase(),
       requiredWei: requiredWei.toString(),
       treasuryAddress,
       packSize: HINTS_PACK_SIZE,
@@ -78,6 +63,8 @@ export async function POST(request: NextRequest) {
     };
 
     const intentToken = signIntentToken(intentPayload);
+
+    console.log("[create-intent] Created intent for address:", address.toLowerCase().slice(0, 10) + "...");
 
     return NextResponse.json({
       intentToken,

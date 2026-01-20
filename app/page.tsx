@@ -568,25 +568,8 @@ export default function Home() {
       return;
     }
 
-    // Auth token required for server-side verification
-    if (!authToken) {
-      showToast("Please sign in first");
-      handleSignIn();
-      return;
-    }
-
-    // For hint purchases, we need wallet-based auth (not just FID)
-    // The server requires payload.address for on-chain tx verification
-    if (!authAddress) {
-      showToast("Please sign in with your wallet to buy hints");
-      // In mini app, user might be signed in via Farcaster but needs wallet sign too
-      if (isMiniApp) {
-        handleConnect();
-      } else {
-        handleSignIn();
-      }
-      return;
-    }
+    // NO auth token required for hint purchases
+    // Server verifies ownership via on-chain tx.from matching the address
 
     try {
       // Reset any previous purchase state before starting new one
@@ -596,14 +579,13 @@ export default function Home() {
       setHintPurchaseState("creating_intent");
       setPurchaseError(null);
 
-      // Create intent
+      // Create intent - pass address directly, no auth token needed
       const res = await fetch("/api/hints/create-intent", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${authToken}`,
         },
-        body: JSON.stringify({ runId }),
+        body: JSON.stringify({ runId, address }),
       });
 
       const data = await res.json();
@@ -632,10 +614,9 @@ export default function Home() {
   }, [
     isConnected,
     isOnBase,
-    authToken,
+    address,
     runId,
     handleConnect,
-    handleSignIn,
     hintPurchaseState,
     switchChain,
     sendTransaction,
@@ -645,7 +626,8 @@ export default function Home() {
 
   const verifyHintPurchase = useCallback(
     async (hash: string, retryCount = 0) => {
-      if (!purchaseIntent || !address || !authToken) return;
+      // No auth token required - server verifies via intent token + on-chain tx.from
+      if (!purchaseIntent || !address) return;
 
       const MAX_RETRIES = 10;
       const RETRY_DELAYS = [1000, 2000, 3000, 3000, 5000, 5000, 5000, 5000, 5000, 5000];
@@ -657,7 +639,6 @@ export default function Home() {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
-            Authorization: `Bearer ${authToken}`,
           },
           body: JSON.stringify({
             intentToken: purchaseIntent.intentToken,
@@ -1009,7 +990,9 @@ export default function Home() {
       return `Hint (${remainingHints})`;
     }
 
-    // Need to buy hints - check prerequisites
+    // Need to buy hints - only wallet + Base chain required
+    // NO auth/sign-in required for on-chain purchases
+
     // Step 1: Wallet connection (required for on-chain tx)
     if (!isConnected) {
       return "Connect wallet to buy";
@@ -1018,16 +1001,6 @@ export default function Home() {
     // Step 2: Correct chain
     if (!isOnBase) {
       return "Switch to Base";
-    }
-
-    // Step 3: Auth (for server-side verification)
-    if (!isAuthed) {
-      return isMiniApp ? "Sign in (Farcaster)" : "Sign in to buy";
-    }
-
-    // Step 4: For purchases, we need wallet-based auth (not just FID)
-    if (!authAddress && !isMiniApp) {
-      return "Sign in to buy";
     }
 
     // Ready to buy - show price
@@ -1052,7 +1025,8 @@ export default function Home() {
       return;
     }
 
-    // Purchase flow - check prerequisites in order
+    // Purchase flow - only wallet + Base chain required
+    // NO auth required for on-chain purchases
 
     // Step 1: Wallet connection (required for on-chain tx)
     if (!isConnected) {
@@ -1066,13 +1040,7 @@ export default function Home() {
       return;
     }
 
-    // Step 3: Auth
-    if (!isAuthed) {
-      handleSignIn();
-      return;
-    }
-
-    // Ready to buy - handleBuyHints has additional checks
+    // Ready to buy
     handleBuyHints();
   };
 
