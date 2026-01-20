@@ -1281,6 +1281,24 @@ export default function Home() {
               ))}
             </div>
 
+            {/* Payment info when awaiting signature */}
+            {hintPurchaseState === "awaiting_signature" && purchaseIntent?.treasuryAddress && (
+              <div className="rounded-xl border border-[#ff6b00]/30 bg-[#ff6b00]/10 px-3 py-2 text-xs text-[#ffb366]">
+                <div className="flex items-center justify-between">
+                  <span>Paying to:</span>
+                  <span className="font-mono">{shortAddress(purchaseIntent.treasuryAddress)}</span>
+                </div>
+                {purchaseIntent.requiredWei && (
+                  <div className="flex items-center justify-between mt-1">
+                    <span>Amount:</span>
+                    <span className="font-mono">
+                      {Number(formatEther(BigInt(purchaseIntent.requiredWei))).toFixed(5)} ETH
+                    </span>
+                  </div>
+                )}
+              </div>
+            )}
+
             <div className="flex gap-3">
               <button
                 className={`h-12 flex-1 rounded-full border text-sm font-semibold transition-all ${
@@ -1309,14 +1327,30 @@ export default function Home() {
             {purchaseError && hintPurchaseState === "error" && (() => {
               const isFriendly = purchaseError.toLowerCase().includes("wallet") ||
                 purchaseError.toLowerCase().includes("connect") ||
-                purchaseError.toLowerCase().includes("sign in");
+                purchaseError.toLowerCase().includes("sign in") ||
+                purchaseError.toLowerCase().includes("cancelled");
+              const showExplorerLink = purchaseTxHash && (
+                purchaseError.toLowerCase().includes("wrong") ||
+                purchaseError.toLowerCase().includes("failed") ||
+                purchaseError.toLowerCase().includes("recipient")
+              );
               return (
                 <div className={`rounded-xl px-4 py-2 text-sm ${
                   isFriendly
                     ? "border border-[#0052ff]/30 bg-[#0052ff]/10 text-[#6fa8ff]"
                     : "border border-red-500/30 bg-red-500/10 text-red-300"
                 }`}>
-                  {purchaseError}
+                  <div>{purchaseError}</div>
+                  {showExplorerLink && (
+                    <a
+                      href={`https://basescan.org/tx/${purchaseTxHash}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="mt-1 inline-block text-xs underline opacity-80 hover:opacity-100"
+                    >
+                      View transaction on BaseScan ↗
+                    </a>
+                  )}
                 </div>
               );
             })()}

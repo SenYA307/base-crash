@@ -50,8 +50,24 @@ export async function POST(request: NextRequest) {
 
     // Handle invalid
     if (verification.status === "invalid") {
+      // Log detailed error info for debugging
+      console.log(`[verify] Invalid tx ${txHash.slice(0, 10)}...: ${verification.error}`, {
+        reason: verification.reason,
+        expected: verification.expected?.slice(0, 12),
+        actual: verification.actual?.slice(0, 12),
+      });
+
       return NextResponse.json(
-        { error: verification.error },
+        {
+          error: verification.error,
+          reason: verification.reason,
+          txHash,
+          // Include expected/actual for client-side display if needed
+          ...(verification.reason === "wrong_recipient" && {
+            expected: verification.expected,
+            actual: verification.actual,
+          }),
+        },
         { status: 400 }
       );
     }

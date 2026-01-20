@@ -160,9 +160,9 @@ export function verifyIntentToken(token: string): IntentPayload | null {
 export const REQUIRED_CONFIRMATIONS = 1;
 
 export type TxVerifyResult =
-  | { status: "valid"; actualFrom: string }
+  | { status: "valid"; actualFrom: string; actualTo: string }
   | { status: "pending"; confirmations: number; required: number }
-  | { status: "invalid"; error: string };
+  | { status: "invalid"; error: string; reason?: string; expected?: string; actual?: string };
 
 /**
  * Verify transaction on Base chain.
@@ -175,6 +175,7 @@ export async function verifyTransaction(params: {
   minValue: bigint;
 }): Promise<TxVerifyResult> {
   const { txHash, expectedTo, minValue } = params;
+  const debugPay = process.env.DEBUG_PAY === "1";
 
   try {
     const client = getBaseClient();
@@ -194,7 +195,7 @@ export async function verifyTransaction(params: {
     }
 
     if (receipt.status !== "success") {
-      return { status: "invalid", error: "Transaction failed" };
+      return { status: "invalid", error: "Transaction failed", reason: "tx_failed" };
     }
 
     // Get transaction details for value
@@ -203,27 +204,54 @@ export async function verifyTransaction(params: {
     });
 
     if (!tx) {
-      return { status: "invalid", error: "Transaction not found" };
+      return { status: "invalid", error: "Transaction not found", reason: "tx_not_found" };
     }
 
     // Verify chain (some transaction variants may not include chainId)
     const txChainId =
       "chainId" in tx ? Number(tx.chainId ?? 0) : 8453;
     if (txChainId !== 8453) {
-      return { status: "invalid", error: "Wrong chain" };
+      return { status: "invalid", error: "Wrong chain", reason: "wrong_chain" };
     }
 
-    // Get actual sender from tx (authoritative for smart wallets)
+    // Get actual sender and recipient from tx (authoritative)
     const actualFrom = tx.from.toLowerCase();
+    // Prefer tx.to, fallback to receipt.to if available
+    const actualTo = (tx.to ?? receipt.to ?? "").toLowerCase();
+    const expectedToLower = expectedTo.toLowerCase();
 
-    // Verify to address
-    if (!tx.to || tx.to.toLowerCase() !== expectedTo.toLowerCase()) {
-      return { status: "invalid", error: "Wrong recipient" };
+    // Debug logging
+    if (debugPay) {
+      console.log("[DEBUG_PAY] Verification:", {
+        txHash: txHash.slice(0, 12) + "...",
+        txTo: tx.to?.slice(0, 12) + "...",
+        receiptTo: receipt.to ? receipt.to.slice(0, 12) + "..." : "null",
+        actualTo: actualTo.slice(0, 12) + "...",
+        expectedTo: expectedToLower.slice(0, 12) + "...",
+        match: actualTo === expectedToLower,
+      });
+    }
+
+    // Verify to address (case-insensitive)
+    if (!actualTo || actualTo !== expectedToLower) {
+      return {
+        status: "invalid",
+        error: "Wrong recipient",
+        reason: "wrong_recipient",
+        expected: expectedTo,
+        actual: actualTo || "unknown",
+      };
     }
 
     // Verify value
     if (tx.value < minValue) {
-      return { status: "invalid", error: "Insufficient payment" };
+      return {
+        status: "invalid",
+        error: "Insufficient payment",
+        reason: "insufficient_value",
+        expected: minValue.toString(),
+        actual: tx.value.toString(),
+      };
     }
 
     // Check confirmations
@@ -233,9 +261,9 @@ export async function verifyTransaction(params: {
       return { status: "pending", confirmations, required: REQUIRED_CONFIRMATIONS };
     }
 
-    return { status: "valid", actualFrom };
+    return { status: "valid", actualFrom, actualTo };
   } catch (error) {
     console.error("[Hints] Verify tx error:", error);
-    return { status: "invalid", error: "Verification failed" };
+    return { status: "invalid", error: "Verification failed", reason: "exception" };
   }
 }

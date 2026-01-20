@@ -25,6 +25,9 @@ const ERROR_PATTERNS: Array<{ pattern: RegExp | string; message: string }> = [
   { pattern: /wrong sender/i, message: "Payment sent from different address. Please retry" },
   { pattern: /address mismatch/i, message: "Address mismatch. Please retry" },
 
+  // Recipient errors (important for hint purchases)
+  { pattern: /wrong recipient/i, message: "Payment was sent to the wrong address. Please try again" },
+
   // Network errors
   { pattern: /network/i, message: "Network error. Please try again" },
   { pattern: /timeout/i, message: "Request timed out. Please try again" },
@@ -33,6 +36,7 @@ const ERROR_PATTERNS: Array<{ pattern: RegExp | string; message: string }> = [
   // Transaction errors
   { pattern: /transaction failed/i, message: "Transaction failed" },
   { pattern: /reverted/i, message: "Transaction failed" },
+  { pattern: /insufficient payment/i, message: "Payment amount was too low. Please try again" },
 ];
 
 /**
