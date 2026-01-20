@@ -55,7 +55,11 @@ export async function POST(request: Request) {
       );
     }
 
-    const address = payload.address.toLowerCase();
+    // Support both wallet auth (address) and Quick Auth (fid)
+    const address = payload.address?.toLowerCase() || (payload.fid ? `fid:${payload.fid}` : null);
+    if (!address) {
+      return NextResponse.json({ error: "No user identifier in token" }, { status: 401 });
+    }
     const now = Date.now();
     const lastSubmit = lastSubmitByAddress.get(address) || 0;
     if (now - lastSubmit < RATE_LIMIT_MS) {

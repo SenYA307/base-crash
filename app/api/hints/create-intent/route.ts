@@ -59,6 +59,14 @@ export async function POST(request: NextRequest) {
     const iat = Math.floor(Date.now() / 1000);
     const exp = iat + INTENT_EXPIRY_SECONDS;
 
+    // Hint purchases require a wallet address for on-chain verification
+    if (!payload.address) {
+      return NextResponse.json(
+        { error: "Wallet address required for hint purchase. Please connect your wallet." },
+        { status: 400 }
+      );
+    }
+
     const intentPayload: IntentPayload = {
       runId,
       address: payload.address,

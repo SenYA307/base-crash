@@ -34,7 +34,11 @@ export async function POST(request: NextRequest) {
     }
 
     const db = await getDb();
-    const address = payload.address.toLowerCase();
+    // Support both wallet auth (address) and Quick Auth (fid)
+    const userId = payload.address?.toLowerCase() || (payload.fid ? `fid:${payload.fid}` : null);
+    if (!userId) {
+      return NextResponse.json({ error: "No user identifier in token" }, { status: 401 });
+    }
     const todayStart = getUTCDayStart();
     const yesterdayStart = todayStart - 86400000; // 24 hours in ms
     const now = Date.now();
@@ -42,7 +46,7 @@ export async function POST(request: NextRequest) {
     // Get current state
     const result = await db.execute({
       sql: "SELECT streak, last_checkin_utc FROM gm_streaks WHERE address = ?",
-      args: [address],
+      args: [userId],
     });
 
     let currentStreak = 0;
@@ -81,7 +85,7 @@ export async function POST(request: NextRequest) {
             ON CONFLICT(address) DO UPDATE SET
               streak = excluded.streak,
               last_checkin_utc = excluded.last_checkin_utc`,
-      args: [address, newStreak, now],
+      args: [userId, newStreak, now],
     });
 
     return NextResponse.json({

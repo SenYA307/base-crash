@@ -163,8 +163,10 @@ export default function Home() {
 
   const [authToken, setAuthToken] = useState<string | null>(null);
   const [authAddress, setAuthAddress] = useState<string | null>(null);
+  const [authFid, setAuthFid] = useState<string | null>(null); // Farcaster ID (Quick Auth)
   const [isSigningIn, setIsSigningIn] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isMiniApp, setIsMiniApp] = useState(false);
 
   // Leaderboard state
   const [leaderboardMode, setLeaderboardMode] =
@@ -185,11 +187,32 @@ export default function Home() {
   const clearAuth = useCallback(() => {
     setAuthToken(null);
     setAuthAddress(null);
+    setAuthFid(null);
     localStorage.removeItem(AUTH_STORAGE_KEY);
   }, []);
 
   useEffect(() => {
     sdk.actions.ready();
+    // Detect if running inside mini app
+    const detectMiniApp = async () => {
+      try {
+        if (typeof sdk.isInMiniApp === "function") {
+          const result = await sdk.isInMiniApp();
+          setIsMiniApp(result);
+        } else {
+          // Fallback detection based on user agent or context
+          const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+          const inFrame = window !== window.top;
+          setIsMiniApp(isMobile && inFrame);
+        }
+      } catch {
+        // Fallback if sdk.isInMiniApp fails
+        const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+        const inFrame = window !== window.top;
+        setIsMiniApp(isMobile && inFrame);
+      }
+    };
+    detectMiniApp();
   }, []);
 
   // Load auth token from localStorage
@@ -199,7 +222,8 @@ export default function Home() {
     try {
       const parsed = JSON.parse(raw) as {
         token: string;
-        address: string;
+        address?: string;
+        fid?: string;
         expiresAt: number;
       };
       if (parsed.expiresAt < Math.floor(Date.now() / 1000)) {
@@ -207,7 +231,12 @@ export default function Home() {
         return;
       }
       setAuthToken(parsed.token);
-      setAuthAddress(parsed.address);
+      if (parsed.address) {
+        setAuthAddress(parsed.address);
+      }
+      if (parsed.fid) {
+        setAuthFid(parsed.fid);
+      }
     } catch {
       localStorage.removeItem(AUTH_STORAGE_KEY);
     }
@@ -283,7 +312,54 @@ export default function Home() {
     }
   }, [connect, connectors, disconnect, isConnected, clearAuth]);
 
-  const handleSignIn = useCallback(async () => {
+  // Quick Auth for mini apps (Farcaster)
+  const handleQuickAuth = useCallback(async () => {
+    try {
+      setIsSigningIn(true);
+      console.log("[quick-auth] Starting Quick Auth...");
+
+      // Use Farcaster Quick Auth
+      const quickAuth = (sdk as unknown as { quickAuth?: { getToken: () => Promise<{ token: string }> } }).quickAuth;
+      if (!quickAuth?.getToken) {
+        throw new Error("Quick Auth not available");
+      }
+
+      const { token } = await quickAuth.getToken();
+      console.log("[quick-auth] Got token, verifying...");
+
+      const verifyRes = await fetch("/api/auth/quick-verify", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token }),
+      });
+      const verifyData = await verifyRes.json();
+      console.log("[quick-auth] Server response:", JSON.stringify(verifyData));
+
+      if (!verifyRes.ok) {
+        throw new Error(verifyData.error || "Quick Auth failed");
+      }
+
+      setAuthToken(verifyData.appToken);
+      setAuthFid(verifyData.fid);
+      localStorage.setItem(
+        AUTH_STORAGE_KEY,
+        JSON.stringify({
+          token: verifyData.appToken,
+          fid: verifyData.fid,
+          expiresAt: verifyData.expiresAt,
+        })
+      );
+      showToast("Signed in (Farcaster)");
+    } catch (error) {
+      console.log("[quick-auth] Error:", (error as Error).message);
+      showToast((error as Error).message);
+    } finally {
+      setIsSigningIn(false);
+    }
+  }, [showToast]);
+
+  // Wallet-based sign in (for desktop/non-mini-app)
+  const handleWalletSignIn = useCallback(async () => {
     if (!address) {
       showToast("Connect wallet first");
       return;
@@ -359,6 +435,17 @@ export default function Home() {
       setIsSigningIn(false);
     }
   }, [address, signMessageAsync, showToast]);
+
+  // Main sign-in handler - chooses Quick Auth or wallet based on context
+  const handleSignIn = useCallback(async () => {
+    if (isMiniApp) {
+      // In mini app: use Quick Auth
+      await handleQuickAuth();
+    } else {
+      // Desktop/browser: use wallet sign-in
+      await handleWalletSignIn();
+    }
+  }, [isMiniApp, handleQuickAuth, handleWalletSignIn]);
 
   const startGame = useCallback(() => {
     if (!isAudioInitialized()) {
@@ -856,11 +943,18 @@ export default function Home() {
     showToast,
   ]);
 
+  // User is authenticated via wallet signature
   const isAuthedForWallet =
     !!authToken &&
     !!authAddress &&
     !!address &&
     authAddress.toLowerCase() === address.toLowerCase();
+
+  // User is authenticated via Farcaster Quick Auth
+  const isAuthedViaFarcaster = !!authToken && !!authFid;
+
+  // User is authenticated (either method)
+  const isAuthed = isAuthedForWallet || isAuthedViaFarcaster;
 
   const isAnimating = animationPhase !== "idle";
 
@@ -894,9 +988,17 @@ export default function Home() {
     }
 
     // Show buy option
-    if (!isConnected) return "Connect to buy hints";
-    if (!isOnBase) return "Switch to Base";
-    if (!isAuthedForWallet) return "Sign in to buy";
+    if (isMiniApp) {
+      // Mini app: use Quick Auth, no wallet needed for auth
+      if (!isAuthed) return "Sign in (Farcaster)";
+      if (!isConnected) return "Connect wallet to buy";
+      if (!isOnBase) return "Switch to Base";
+    } else {
+      // Desktop: wallet auth
+      if (!isConnected) return "Connect to buy hints";
+      if (!isOnBase) return "Switch to Base";
+      if (!isAuthed) return "Sign in to buy";
+    }
 
     // Show price only if we have a valid intent
     if (purchaseIntent?.requiredWei) {

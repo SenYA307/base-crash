@@ -34,11 +34,15 @@ export async function GET(request: NextRequest) {
     }
 
     const db = await getDb();
-    const address = payload.address.toLowerCase();
+    // Support both wallet auth (address) and Quick Auth (fid)
+    const userId = payload.address?.toLowerCase() || (payload.fid ? `fid:${payload.fid}` : null);
+    if (!userId) {
+      return NextResponse.json({ error: "No user identifier in token" }, { status: 401 });
+    }
 
     const result = await db.execute({
       sql: "SELECT streak, last_checkin_utc FROM gm_streaks WHERE address = ?",
-      args: [address],
+      args: [userId],
     });
 
     const todayStart = getUTCDayStart();

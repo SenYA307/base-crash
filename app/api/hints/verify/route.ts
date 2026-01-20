@@ -37,7 +37,10 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Verify address matches
+    // Verify address matches - hint purchases require wallet auth
+    if (!authPayload.address) {
+      return NextResponse.json({ error: "Wallet address required for hint verification" }, { status: 400 });
+    }
     if (
       intent.address.toLowerCase() !== address.toLowerCase() ||
       authPayload.address.toLowerCase() !== address.toLowerCase()

@@ -197,7 +197,8 @@ export async function verifySignature(params: {
 }
 
 type TokenPayload = {
-  address: string;
+  address?: string;
+  fid?: string;
   iat: number;
   exp: number;
 };
@@ -216,6 +217,27 @@ export function signAuthToken(address: string) {
   return { token, address: payload.address, expiresAt: exp };
 }
 
+/**
+ * Sign an auth token for a Farcaster user (by FID instead of wallet address)
+ */
+export function signAuthTokenForFid(fid: string) {
+  const secret = getAuthSecret();
+  const iat = Math.floor(Date.now() / 1000);
+  const exp = iat + TOKEN_EXPIRY_SECONDS;
+  const payload: TokenPayload = { fid, iat, exp };
+  const payloadEncoded = Buffer.from(JSON.stringify(payload)).toString("base64url");
+  const signature = crypto
+    .createHmac("sha256", secret)
+    .update(payloadEncoded)
+    .digest("base64url");
+  const token = `${payloadEncoded}.${signature}`;
+  return { token, fid, expiresAt: exp };
+}
+
+/**
+ * Verify an auth token and return the payload.
+ * Tokens can contain either address (wallet auth) or fid (Quick Auth).
+ */
 export function verifyAuthToken(token: string): TokenPayload | null {
   const secret = getAuthSecret();
   const [payloadEncoded, signature] = token.split(".");
