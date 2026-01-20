@@ -1018,9 +1018,40 @@ export default function Home() {
   const handleHintButtonClick = () => {
     if (remainingHints > 0 && hintPurchaseState === "idle") {
       handleHint();
-    } else {
-      handleBuyHints();
+      return;
     }
+
+    // Handle purchase states
+    if (isMiniApp) {
+      // Mini app flow
+      if (!isAuthed) {
+        handleSignIn(); // Trigger Farcaster Quick Auth
+        return;
+      }
+      if (!isConnected) {
+        handleConnect(); // Connect wallet
+        return;
+      }
+    } else {
+      // Desktop flow
+      if (!isConnected) {
+        handleConnect();
+        return;
+      }
+      if (!isAuthed) {
+        handleSignIn();
+        return;
+      }
+    }
+
+    // If on wrong chain, switch
+    if (!isOnBase) {
+      switchChain({ chainId: base.id });
+      return;
+    }
+
+    // Ready to buy
+    handleBuyHints();
   };
 
   return (
@@ -1044,6 +1075,33 @@ export default function Home() {
               </p>
             </div>
             <div className="flex flex-col gap-3">
+              {/* Mini App: Show Farcaster sign-in button */}
+              {isMiniApp && !isAuthed && (
+                <button
+                  className="h-12 w-full rounded-full bg-[#8b5cf6] text-sm font-semibold text-white shadow-[0_10px_25px_rgba(139,92,246,0.35)]"
+                  type="button"
+                  onClick={handleSignIn}
+                  disabled={isSigningIn}
+                >
+                  {isSigningIn ? "Signing in..." : "Sign in (Farcaster)"}
+                </button>
+              )}
+              {/* Mini App: Show signed in status */}
+              {isMiniApp && isAuthed && (
+                <div className="flex items-center justify-between rounded-full border border-[#8b5cf6]/50 bg-[#8b5cf6]/20 px-4 py-3">
+                  <span className="text-sm text-white">
+                    ✓ Signed in {authFid ? `(FID ${authFid})` : ""}
+                  </span>
+                  <button
+                    className="text-xs text-[#8b5cf6] hover:text-white"
+                    type="button"
+                    onClick={clearAuth}
+                  >
+                    Sign out
+                  </button>
+                </div>
+              )}
+              {/* Wallet connect button */}
               <button
                 className={`h-12 w-full rounded-full border text-sm font-semibold transition-colors ${
                   isConnected
@@ -1056,7 +1114,8 @@ export default function Home() {
               >
                 {getConnectButtonText()}
               </button>
-              {isConnected && (
+              {/* Desktop/browser: wallet-based sign in */}
+              {!isMiniApp && isConnected && (
                 <div className="flex gap-3">
                   {!isAuthedForWallet ? (
                     <button
@@ -1271,7 +1330,20 @@ export default function Home() {
                   Final Score: {gameState.score}
                 </p>
                 <div className="mt-4">
-                  {!isConnected ? (
+                  {!isAuthed ? (
+                    <button
+                      className="h-11 w-full rounded-full border border-[#0052ff]/50 bg-[#0052ff]/20 text-sm font-semibold text-[#6fa8ff]"
+                      type="button"
+                      onClick={handleSignIn}
+                      disabled={isSigningIn}
+                    >
+                      {isSigningIn
+                        ? "Signing in…"
+                        : isMiniApp
+                        ? "Sign in (Farcaster) to submit"
+                        : "Sign in to submit"}
+                    </button>
+                  ) : !isConnected ? (
                     <button
                       className="h-11 w-full rounded-full border border-white/20 bg-white/5 text-sm font-semibold text-white"
                       type="button"
@@ -1282,7 +1354,7 @@ export default function Home() {
                         ? "Connecting…"
                         : "Connect wallet to submit"}
                     </button>
-                  ) : !isAuthedForWallet ? (
+                  ) : !isAuthedForWallet && !isMiniApp ? (
                     <button
                       className="h-11 w-full rounded-full border border-[#0052ff]/50 bg-[#0052ff]/20 text-sm font-semibold text-[#6fa8ff]"
                       type="button"
@@ -1306,6 +1378,19 @@ export default function Home() {
             )}
           </main>
         ) : null}
+
+        {/* Auth Debug Section (only when DEBUG_SIGN=true on window) */}
+        {typeof window !== "undefined" &&
+          (window as unknown as Record<string, unknown>).DEBUG_SIGN === true && (
+          <div className="fixed bottom-2 left-2 z-50 rounded-lg bg-black/80 p-2 text-xs text-white font-mono">
+            <div>isMiniApp: {String(isMiniApp)}</div>
+            <div>isAuthed: {String(isAuthed)}</div>
+            <div>authFid: {authFid || "null"}</div>
+            <div>token: {authToken ? "yes" : "no"}</div>
+            <div>wallet: {isConnected ? shortAddress(address) : "no"}</div>
+            <div>hintState: {hintPurchaseState}</div>
+          </div>
+        )}
       </div>
     </div>
   );

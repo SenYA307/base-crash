@@ -5,30 +5,43 @@ import { signAuthTokenForFid } from "@/lib/auth";
 export const runtime = "nodejs";
 
 export async function POST(request: Request) {
+  console.log("[quick-verify] Request received");
+
   try {
     const body = await request.json();
     const token = body?.token as string | undefined;
 
+    console.log("[quick-verify] Token present:", !!token, "length:", token?.length || 0);
+
     if (!token) {
+      console.log("[quick-verify] ERROR: Missing token in request body");
       return NextResponse.json(
         { error: "token is required", errorCode: "MISSING_TOKEN" },
         { status: 400 }
       );
     }
 
-    // Determine domain for verification
+    // Determine domain for verification - must be exact domain, no protocol or port
     const host = request.headers.get("host") || "";
-    const domain = process.env.QUICK_AUTH_DOMAIN || host.split(":")[0];
+    const rawDomain = process.env.QUICK_AUTH_DOMAIN || host;
+    // Clean domain: remove protocol, port, trailing slash
+    const domain = rawDomain
+      .replace(/^https?:\/\//, "")
+      .split(":")[0]
+      .split("/")[0]
+      .trim();
+
+    console.log("[quick-verify] Host header:", host);
+    console.log("[quick-verify] QUICK_AUTH_DOMAIN env:", process.env.QUICK_AUTH_DOMAIN || "(not set)");
+    console.log("[quick-verify] Using domain:", domain);
 
     if (!domain) {
-      console.log("[quick-verify] No domain available for verification");
+      console.log("[quick-verify] ERROR: No domain available for verification");
       return NextResponse.json(
         { error: "Could not determine verification domain", errorCode: "NO_DOMAIN" },
         { status: 500 }
       );
     }
-
-    console.log(`[quick-verify] Verifying token for domain: ${domain}`);
 
     // Create Quick Auth client and verify JWT
     const client = createClient();
