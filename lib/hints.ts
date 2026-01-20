@@ -160,20 +160,21 @@ export function verifyIntentToken(token: string): IntentPayload | null {
 export const REQUIRED_CONFIRMATIONS = 1;
 
 export type TxVerifyResult =
-  | { status: "valid" }
+  | { status: "valid"; actualFrom: string }
   | { status: "pending"; confirmations: number; required: number }
   | { status: "invalid"; error: string };
 
 /**
  * Verify transaction on Base chain.
+ * Now uses tx.from as the authoritative sender (for smart wallet support).
+ * Does NOT require expectedFrom to match - returns actualFrom for caller to use.
  */
 export async function verifyTransaction(params: {
   txHash: string;
-  expectedFrom: string;
   expectedTo: string;
   minValue: bigint;
 }): Promise<TxVerifyResult> {
-  const { txHash, expectedFrom, expectedTo, minValue } = params;
+  const { txHash, expectedTo, minValue } = params;
 
   try {
     const client = getBaseClient();
@@ -212,10 +213,8 @@ export async function verifyTransaction(params: {
       return { status: "invalid", error: "Wrong chain" };
     }
 
-    // Verify from address
-    if (tx.from.toLowerCase() !== expectedFrom.toLowerCase()) {
-      return { status: "invalid", error: "Wrong sender" };
-    }
+    // Get actual sender from tx (authoritative for smart wallets)
+    const actualFrom = tx.from.toLowerCase();
 
     // Verify to address
     if (!tx.to || tx.to.toLowerCase() !== expectedTo.toLowerCase()) {
@@ -234,7 +233,7 @@ export async function verifyTransaction(params: {
       return { status: "pending", confirmations, required: REQUIRED_CONFIRMATIONS };
     }
 
-    return { status: "valid" };
+    return { status: "valid", actualFrom };
   } catch (error) {
     console.error("[Hints] Verify tx error:", error);
     return { status: "invalid", error: "Verification failed" };

@@ -9,11 +9,11 @@ export const runtime = "nodejs";
 export async function POST(request: NextRequest) {
   try {
     // NO auth token required - we verify via intent token + on-chain tx.from
-    // Parse body
     const body = await request.json();
-    const { intentToken, txHash, address } = body;
+    const { intentToken, txHash } = body;
+    // address is optional - we'll use tx.from from blockchain as authoritative
 
-    if (!intentToken || !txHash || !address) {
+    if (!intentToken || !txHash) {
       return NextResponse.json({ error: "Missing fields" }, { status: 400 });
     }
 
@@ -26,67 +26,10 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Verify address in request matches intent address
-    // On-chain verification will also check tx.from matches
-    if (intent.address.toLowerCase() !== address.toLowerCase()) {
-      return NextResponse.json({ error: "Address mismatch with intent" }, { status: 400 });
-    }
-
-    const db = await getDb();
-
-    // Check if txHash already used
-    const existingResult = await db.execute({
-      sql: "SELECT id, address, run_id, added_hints FROM hint_purchases WHERE tx_hash = ?",
-      args: [txHash.toLowerCase()],
-    });
-    const existingRow = existingResult.rows[0];
-    const existing = existingRow
-      ? {
-          id: Number(existingRow.id ?? existingRow["id"] ?? 0),
-          address: String(existingRow.address ?? existingRow["address"] ?? ""),
-          run_id: String(existingRow.run_id ?? existingRow["run_id"] ?? ""),
-          added_hints: Number(
-            existingRow.added_hints ?? existingRow["added_hints"] ?? 0
-          ),
-        }
-      : undefined;
-
-    if (existing) {
-      // Check if this was the same user and run (retry of already-processed purchase)
-      if (
-        existing.address === address.toLowerCase() &&
-        existing.run_id === intent.runId
-      ) {
-        // Already verified for this user/run - return success
-        const totalResult = await db.execute({
-          sql: `SELECT SUM(added_hints) as total FROM hint_purchases
-                WHERE address = ? AND run_id = ?`,
-          args: [address.toLowerCase(), intent.runId],
-        });
-        const totalRow = totalResult.rows[0];
-
-        return NextResponse.json({
-          ok: true,
-          alreadyProcessed: true,
-          addedHints: 0,
-          purchasedHints: Number(
-            totalRow?.total ?? totalRow?.["total"] ?? 0
-          ),
-          message: "Already verified",
-        });
-      }
-
-      // Different user or run - actual replay attempt
-      return NextResponse.json(
-        { error: "Transaction already used for a different purchase" },
-        { status: 400 }
-      );
-    }
-
-    // Verify transaction on chain
+    // Verify transaction on chain FIRST to get actual sender
+    // This is authoritative - smart wallets may have different tx.from than UI address
     const verification = await verifyTransaction({
       txHash,
-      expectedFrom: address,
       expectedTo: intent.treasuryAddress,
       minValue: BigInt(intent.requiredWei),
     });
@@ -113,13 +56,69 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Record the purchase (avoid UNIQUE constraint crashes)
+    // Use actual sender from blockchain (authoritative for smart wallets)
+    const actualSender = verification.actualFrom;
+    console.log(`[verify] Tx ${txHash.slice(0, 10)}... from ${actualSender.slice(0, 10)}...`);
+
+    const db = await getDb();
+
+    // Check if txHash already used
+    const existingResult = await db.execute({
+      sql: "SELECT id, address, run_id, added_hints FROM hint_purchases WHERE tx_hash = ?",
+      args: [txHash.toLowerCase()],
+    });
+    const existingRow = existingResult.rows[0];
+    const existing = existingRow
+      ? {
+          id: Number(existingRow.id ?? existingRow["id"] ?? 0),
+          address: String(existingRow.address ?? existingRow["address"] ?? ""),
+          run_id: String(existingRow.run_id ?? existingRow["run_id"] ?? ""),
+          added_hints: Number(
+            existingRow.added_hints ?? existingRow["added_hints"] ?? 0
+          ),
+        }
+      : undefined;
+
+    if (existing) {
+      // Check if this was the same sender and run (retry of already-processed purchase)
+      if (
+        existing.address === actualSender &&
+        existing.run_id === intent.runId
+      ) {
+        // Already verified for this sender/run - return success
+        const totalResult = await db.execute({
+          sql: `SELECT SUM(added_hints) as total FROM hint_purchases
+                WHERE address = ? AND run_id = ?`,
+          args: [actualSender, intent.runId],
+        });
+        const totalRow = totalResult.rows[0];
+
+        return NextResponse.json({
+          ok: true,
+          alreadyProcessed: true,
+          addedHints: 0,
+          purchasedHints: Number(
+            totalRow?.total ?? totalRow?.["total"] ?? 0
+          ),
+          actualSender,
+          message: "Already verified",
+        });
+      }
+
+      // Different sender or run - actual replay attempt
+      return NextResponse.json(
+        { error: "Transaction already used for a different purchase" },
+        { status: 400 }
+      );
+    }
+
+    // Record the purchase using actual sender (avoid UNIQUE constraint crashes)
     const createdAt = Math.floor(Date.now() / 1000);
     const insertResult = await db.execute({
       sql: `INSERT OR IGNORE INTO hint_purchases (address, run_id, tx_hash, added_hints, created_at)
             VALUES (?, ?, ?, ?, ?)`,
       args: [
-        address.toLowerCase(),
+        actualSender,
         intent.runId,
         txHash.toLowerCase(),
         HINTS_PACK_SIZE,
@@ -147,13 +146,14 @@ export async function POST(request: NextRequest) {
 
       if (
         existingTx &&
-        existingTx.address === address.toLowerCase() &&
+        existingTx.address === actualSender &&
         existingTx.run_id === intent.runId
       ) {
         return NextResponse.json({
           ok: true,
           alreadyProcessed: true,
           addedHints: 0,
+          actualSender,
         });
       }
 
@@ -163,11 +163,11 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Calculate remaining hints for this run
+    // Calculate remaining hints for this run using actual sender
     const result = await db.execute({
       sql: `SELECT SUM(added_hints) as total FROM hint_purchases
             WHERE address = ? AND run_id = ?`,
-      args: [address.toLowerCase(), intent.runId],
+      args: [actualSender, intent.runId],
     });
     const purchasedHints = Number(
       result.rows[0]?.total ?? result.rows[0]?.["total"] ?? 0
@@ -177,6 +177,7 @@ export async function POST(request: NextRequest) {
       ok: true,
       addedHints: HINTS_PACK_SIZE,
       purchasedHints,
+      actualSender,
     });
   } catch (error) {
     console.error("[verify] Error:", error);

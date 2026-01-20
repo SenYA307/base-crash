@@ -44,6 +44,7 @@ import {
   playGameOver,
   isInitialized as isAudioInitialized,
 } from "@/lib/audio";
+import { formatWalletError, isUserCancellation } from "@/lib/errors";
 
 // Hint constants
 const HINT_COOLDOWN_MS = 12000;
@@ -270,11 +271,13 @@ export default function Home() {
     }
   }, [isTxConfirmed, txHash, hintPurchaseState, purchaseIntent]);
 
-  // Handle tx error
+  // Handle tx error with friendly messages
   useEffect(() => {
     if (txError && hintPurchaseState === "awaiting_signature") {
-      setPurchaseError(txError.message || "Transaction rejected");
+      const friendlyMessage = formatWalletError(txError);
+      setPurchaseError(friendlyMessage);
       setHintPurchaseState("error");
+      // Toast shown via purchaseError UI - no need for separate toast
     }
   }, [txError, hintPurchaseState]);
 
@@ -608,7 +611,8 @@ export default function Home() {
         chainId: base.id,
       });
     } catch (error) {
-      setPurchaseError((error as Error).message);
+      const friendlyMessage = formatWalletError(error);
+      setPurchaseError(friendlyMessage);
       setHintPurchaseState("error");
     }
   }, [
@@ -627,7 +631,8 @@ export default function Home() {
   const verifyHintPurchase = useCallback(
     async (hash: string, retryCount = 0) => {
       // No auth token required - server verifies via intent token + on-chain tx.from
-      if (!purchaseIntent || !address) return;
+      // Address is optional - server uses tx.from as authoritative (smart wallet support)
+      if (!purchaseIntent) return;
 
       const MAX_RETRIES = 10;
       const RETRY_DELAYS = [1000, 2000, 3000, 3000, 5000, 5000, 5000, 5000, 5000, 5000];
@@ -643,7 +648,7 @@ export default function Home() {
           body: JSON.stringify({
             intentToken: purchaseIntent.intentToken,
             txHash: hash,
-            address,
+            // address is optional - server uses on-chain tx.from as authoritative
           }),
         });
 
@@ -691,11 +696,12 @@ export default function Home() {
           resetTx();
         }, 2000);
       } catch (error) {
-        setPurchaseError((error as Error).message);
+        const friendlyMessage = formatWalletError(error);
+        setPurchaseError(friendlyMessage);
         setHintPurchaseState("error");
       }
     },
-    [purchaseIntent, address, authToken, showToast, resetTx]
+    [purchaseIntent, showToast, resetTx]
   );
 
   // Update purchase state when tx hash is received
