@@ -124,10 +124,9 @@ export default function Home() {
     useState<HintPurchaseState>("idle");
   const [purchaseIntent, setPurchaseIntent] = useState<{
     intentToken: string;
-    requiredWei: string;
+    requiredUsdc: string;
+    tokenAddress: string;
     treasuryAddress: string;
-    contractAddress?: string | null;
-    runIdBytes32?: string;
   } | null>(null);
   const [purchaseTxHash, setPurchaseTxHash] = useState<string | null>(null);
   const [purchaseError, setPurchaseError] = useState<string | null>(null);
@@ -600,77 +599,53 @@ export default function Home() {
 
       setPurchaseIntent({
         intentToken: data.intentToken,
-        requiredWei: data.requiredWei,
+        requiredUsdc: data.requiredUsdc,
+        tokenAddress: data.tokenAddress,
         treasuryAddress: data.treasuryAddress,
-        contractAddress: data.contractAddress,
-        runIdBytes32: data.runIdBytes32,
       });
 
       setHintPurchaseState("awaiting_signature");
 
-      // Prefer contract call when contractAddress is provided (single source of truth)
-      if (data.contractAddress) {
-        if (!data.runIdBytes32) {
-          setPurchaseError("Internal config mismatch");
-          setHintPurchaseState("error");
-          return;
-        }
+      // USDC transfer: call transfer(treasury, amount) on USDC contract
+      const callData = encodeFunctionData({
+        abi: [
+          {
+            type: "function",
+            name: "transfer",
+            inputs: [
+              { name: "to", type: "address" },
+              { name: "amount", type: "uint256" },
+            ],
+            outputs: [{ name: "", type: "bool" }],
+            stateMutability: "nonpayable",
+          },
+        ],
+        functionName: "transfer",
+        args: [
+          data.treasuryAddress as `0x${string}`,
+          BigInt(data.requiredUsdc),
+        ],
+      });
 
-        // Contract-based purchase (works with smart wallets)
-        const callData = encodeFunctionData({
-          abi: [
-            {
-              type: "function",
-              name: "buyHints",
-              inputs: [{ name: "runId", type: "bytes32" }],
-              outputs: [],
-              stateMutability: "payable",
-            },
-          ],
-          functionName: "buyHints",
-          args: [data.runIdBytes32 as `0x${string}`],
-        });
+      const usdcAddress = data.tokenAddress as `0x${string}`;
 
-        const toAddress = data.contractAddress as `0x${string}`;
-        if (toAddress.toLowerCase() !== String(data.contractAddress).toLowerCase()) {
-          setPurchaseError("Internal config mismatch");
-          setHintPurchaseState("error");
-          return;
-        }
-
-        if (
-          typeof window !== "undefined" &&
-          (window as unknown as Record<string, unknown>).DEBUG_PAY === true
-        ) {
-          console.log("[DEBUG_PAY] Purchase mode: contract", {
-            to: toAddress,
-            runIdBytes32: data.runIdBytes32,
-          });
-        }
-
-        sendTransaction({
-          to: toAddress,
-          data: callData,
-          value: BigInt(data.requiredWei),
-          chainId: base.id,
-        });
-      } else {
-        // Legacy direct transfer (only if contractAddress is not configured)
-        if (
-          typeof window !== "undefined" &&
-          (window as unknown as Record<string, unknown>).DEBUG_PAY === true
-        ) {
-          console.log("[DEBUG_PAY] Purchase mode: legacy", {
-            to: data.treasuryAddress,
-          });
-        }
-
-        sendTransaction({
-          to: data.treasuryAddress as `0x${string}`,
-          value: BigInt(data.requiredWei),
-          chainId: base.id,
+      if (
+        typeof window !== "undefined" &&
+        (window as unknown as Record<string, unknown>).DEBUG_PAY === true
+      ) {
+        console.log("[DEBUG_PAY] Purchase mode: USDC transfer", {
+          usdc: usdcAddress,
+          to: data.treasuryAddress,
+          amount: data.requiredUsdc,
         });
       }
+
+      // Send USDC transfer (no ETH value)
+      sendTransaction({
+        to: usdcAddress,
+        data: callData,
+        chainId: base.id,
+      });
     } catch (error) {
       const friendlyMessage = formatWalletError(error);
       setPurchaseError(friendlyMessage);
@@ -1086,19 +1061,16 @@ export default function Home() {
       return "Switch to Base";
     }
 
-    // Ready to buy - show price
-    if (purchaseIntent?.requiredWei) {
+    // Ready to buy - show USDC price
+    if (purchaseIntent?.requiredUsdc) {
       try {
-        const priceEth = formatEther(BigInt(purchaseIntent.requiredWei));
-        const formatted = Number(priceEth).toFixed(5);
-        if (!isNaN(Number(formatted))) {
-          return `Buy 3 hints (~${formatted} ETH)`;
-        }
+        const priceUsdc = Number(purchaseIntent.requiredUsdc) / 1_000_000;
+        return `Buy 3 hints (${priceUsdc.toFixed(0)} USDC)`;
       } catch {
         // Fall through to default
       }
     }
-    return "Buy 3 hints ($1)";
+    return "Buy 3 hints (1 USDC)";
   };
 
   const handleHintButtonClick = () => {
@@ -1360,26 +1332,24 @@ export default function Home() {
 
             {/* Payment info when awaiting signature */}
             {hintPurchaseState === "awaiting_signature" && purchaseIntent && (
-              <div className="rounded-xl border border-[#ff6b00]/30 bg-[#ff6b00]/10 px-3 py-2 text-xs text-[#ffb366]">
+              <div className="rounded-xl border border-[#2563eb]/30 bg-[#2563eb]/10 px-3 py-2 text-xs text-[#60a5fa]">
                 <div className="flex items-center justify-between">
-                  <span>{purchaseIntent.contractAddress ? "Contract:" : "Paying to:"}</span>
+                  <span>USDC to:</span>
                   <span className="font-mono">
-                    {shortAddress(purchaseIntent.contractAddress || purchaseIntent.treasuryAddress)}
+                    {shortAddress(purchaseIntent.treasuryAddress)}
                   </span>
                 </div>
-                {purchaseIntent.requiredWei && (
+                {purchaseIntent.requiredUsdc && (
                   <div className="flex items-center justify-between mt-1">
                     <span>Amount:</span>
                     <span className="font-mono">
-                      {Number(formatEther(BigInt(purchaseIntent.requiredWei))).toFixed(5)} ETH
+                      {(Number(purchaseIntent.requiredUsdc) / 1_000_000).toFixed(2)} USDC
                     </span>
                   </div>
                 )}
-                {purchaseIntent.contractAddress && (
-                  <div className="mt-1 text-[10px] opacity-70">
-                    Smart wallet compatible ✓
-                  </div>
-                )}
+                <div className="mt-1 text-[10px] opacity-70">
+                  Works with all wallets ✓
+                </div>
               </div>
             )}
 

@@ -1,17 +1,21 @@
 import crypto from "crypto";
-import { createPublicClient, http, parseAbi, decodeEventLog, type Log } from "viem";
+import { createPublicClient, http, decodeEventLog, type Log } from "viem";
 import { base } from "viem/chains";
-import { findInternalEthToAddress } from "./basescan";
-import BaseCrashHintsAbi from "./contracts/BaseCrashHints.abi.json";
+import ERC20Abi from "./contracts/ERC20.abi.json";
 
 export const HINTS_PACK_SIZE = 3;
 export const FREE_HINTS_PER_RUN = 3;
 export const INTENT_EXPIRY_SECONDS = 300; // 5 minutes
 
-// Chainlink ETH/USD feed ABI (just latestRoundData)
-const PRICE_FEED_ABI = parseAbi([
-  "function latestRoundData() external view returns (uint80 roundId, int256 answer, uint256 startedAt, uint256 updatedAt, uint80 answeredInRound)",
-]);
+// USDC on Base mainnet
+export const USDC_ADDRESS = "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913";
+export const USDC_DECIMALS = 6;
+
+// Default price: 1 USDC = 1_000000 (6 decimals)
+export function getHintsPriceUsdc(): bigint {
+  const priceStr = process.env.HINTS_PRICE_USDC || "1000000";
+  return BigInt(priceStr);
+}
 
 // Treasury address
 export function getTreasuryAddress(): string {
@@ -19,11 +23,6 @@ export function getTreasuryAddress(): string {
     process.env.TREASURY_ADDRESS ||
     "0x87AA66FB877c508420D77A3f7D1D5020b4d1A8f9"
   );
-}
-
-// Hints contract address
-export function getHintsContractAddress(): string | null {
-  return process.env.HINTS_CONTRACT_ADDRESS || null;
 }
 
 export function runIdToBytes32(runId: string): string {
@@ -70,61 +69,21 @@ function getBaseClient() {
 }
 
 /**
- * Calculate required wei for $1 worth of ETH.
- * Adds a 2% buffer to avoid underpayment.
+ * Get required USDC amount for hint pack purchase.
+ * Returns amount in USDC smallest units (6 decimals).
  */
-export async function calculateRequiredWei(): Promise<bigint> {
-  // Check for fixed price override
-  const fixedWei = process.env.HINTS_PRICE_WEI;
-  if (fixedWei) {
-    return BigInt(fixedWei);
-  }
-
-  const feedAddress = process.env.ETH_USD_FEED_ADDRESS;
-  if (!feedAddress) {
-    // No feed configured, use a default (~$3000 = 0.000333 ETH for $1)
-    // This is a fallback; should configure properly in production
-    console.warn("[Hints] No ETH_USD_FEED_ADDRESS set, using fallback price");
-    return BigInt("333333333333333"); // ~0.000333 ETH
-  }
-
-  try {
-    const client = getBaseClient();
-    const result = await client.readContract({
-      address: feedAddress as `0x${string}`,
-      abi: PRICE_FEED_ABI,
-      functionName: "latestRoundData",
-    });
-
-    // answer is ETH/USD price with 8 decimals
-    const ethUsdPrice = result[1];
-    if (ethUsdPrice <= 0n) {
-      throw new Error("Invalid price from feed");
-    }
-
-    // $1 in ETH = 1 / ethUsdPrice (adjusted for decimals)
-    // ethUsdPrice has 8 decimals, ETH has 18 decimals
-    // requiredWei = (1 * 10^18 * 10^8) / ethUsdPrice
-    const oneUsdInWei = (BigInt(1e18) * BigInt(1e8)) / ethUsdPrice;
-
-    // Add 2% buffer
-    const withBuffer = (oneUsdInWei * 102n) / 100n;
-
-    return withBuffer;
-  } catch (error) {
-    console.error("[Hints] Price feed error:", error);
-    // Fallback
-    return BigInt("333333333333333");
-  }
+export function getRequiredUsdc(): bigint {
+  return getHintsPriceUsdc();
 }
 
 export type IntentPayload = {
   runId: string;
   runIdBytes32?: string;
   address: string;
-  requiredWei: string;
+  // USDC payment (6 decimals)
+  requiredUsdc: string;
+  tokenAddress: string; // USDC contract address
   treasuryAddress: string;
-  contractAddress?: string | null;
   packSize: number;
   iat: number;
   exp: number;
@@ -175,52 +134,49 @@ export function verifyIntentToken(token: string): IntentPayload | null {
 export const REQUIRED_CONFIRMATIONS = 1;
 
 export type TxVerifyResult =
-  | { status: "valid"; actualFrom: string; actualTo: string; usedInternalTransfer?: boolean; usedEvent?: boolean; buyer?: string }
+  | { status: "valid"; buyer: string; amount: bigint }
   | { status: "pending"; confirmations: number; required: number }
-  | { status: "invalid"; error: string; reason?: string; expected?: string; actual?: string; hint?: string };
+  | { status: "invalid"; error: string; reason?: string; expected?: string; actual?: string };
 
 /**
- * Parsed HintsPurchased event
+ * Parsed ERC-20 Transfer event
  */
-export interface HintsPurchasedEvent {
-  buyer: string;
-  runId: string; // bytes32 as hex
-  amountWei: bigint;
-  hints: bigint;
+export interface TransferEvent {
+  from: string;
+  to: string;
+  value: bigint;
 }
 
 /**
- * Parse HintsPurchased events from transaction receipt logs
+ * Parse ERC-20 Transfer events from transaction receipt logs
  */
-export function parseHintsPurchasedEvents(logs: Log[]): HintsPurchasedEvent[] {
-  const events: HintsPurchasedEvent[] = [];
-  const contractAddress = getHintsContractAddress()?.toLowerCase();
+export function parseTransferEvents(logs: Log[], tokenAddress: string): TransferEvent[] {
+  const events: TransferEvent[] = [];
+  const tokenLower = tokenAddress.toLowerCase();
 
   for (const log of logs) {
-    // Only parse logs from our contract
-    if (contractAddress && log.address.toLowerCase() !== contractAddress) {
+    // Only parse logs from the specified token contract
+    if (log.address.toLowerCase() !== tokenLower) {
       continue;
     }
 
     try {
       const decoded = decodeEventLog({
-        abi: BaseCrashHintsAbi,
+        abi: ERC20Abi,
         data: log.data,
         topics: log.topics,
       });
 
-      if (decoded.eventName === "HintsPurchased" && decoded.args) {
+      if (decoded.eventName === "Transfer" && decoded.args) {
         const args = decoded.args as unknown as {
-          buyer: string;
-          runId: string;
-          amountWei: bigint;
-          hints: bigint;
+          from: string;
+          to: string;
+          value: bigint;
         };
         events.push({
-          buyer: args.buyer.toLowerCase(),
-          runId: args.runId,
-          amountWei: args.amountWei,
-          hints: args.hints,
+          from: args.from.toLowerCase(),
+          to: args.to.toLowerCase(),
+          value: args.value,
         });
       }
     } catch {
@@ -232,25 +188,17 @@ export function parseHintsPurchasedEvents(logs: Log[]): HintsPurchasedEvent[] {
 }
 
 /**
- * Verify hint purchase via contract event (preferred method).
- * Returns the buyer from the event, which is authoritative.
+ * Verify USDC hint purchase by parsing Transfer logs.
+ * This is the primary verification method - works for EOA and AA wallets.
  */
-export async function verifyContractPurchase(params: {
+export async function verifyUsdcPurchase(params: {
   txHash: string;
-  expectedRunIdBytes32: string;
-  minValue: bigint;
+  expectedTreasury: string;
+  minAmount: bigint;
 }): Promise<TxVerifyResult> {
-  const { txHash, expectedRunIdBytes32, minValue } = params;
+  const { txHash, expectedTreasury, minAmount } = params;
   const debugPay = process.env.DEBUG_PAY === "1";
-  const contractAddress = getHintsContractAddress();
-
-  if (!contractAddress) {
-    return {
-      status: "invalid",
-      error: "Hints contract not configured",
-      reason: "no_contract",
-    };
-  }
+  const treasuryLower = expectedTreasury.toLowerCase();
 
   try {
     const client = getBaseClient();
@@ -273,63 +221,62 @@ export async function verifyContractPurchase(params: {
       return { status: "invalid", error: "Transaction failed", reason: "tx_failed" };
     }
 
-    // Parse HintsPurchased events from logs
-    const events = parseHintsPurchasedEvents(receipt.logs as Log[]);
+    // Parse Transfer events from USDC contract
+    const transfers = parseTransferEvents(receipt.logs as Log[], USDC_ADDRESS);
 
     if (debugPay) {
-      console.log("[DEBUG_PAY] Contract verification:", {
+      console.log("[DEBUG_PAY] USDC verification:", {
         txHash: txHash.slice(0, 12) + "...",
         logsCount: receipt.logs.length,
-        eventsFound: events.length,
-        expectedRunId: expectedRunIdBytes32.slice(0, 12) + "...",
+        transfersFound: transfers.length,
+        expectedTreasury: treasuryLower.slice(0, 12) + "...",
+        minAmount: minAmount.toString(),
       });
     }
 
-    if (events.length === 0) {
-      return {
-        status: "invalid",
-        error: "No HintsPurchased event found",
-        reason: "event_not_found",
-        expected: contractAddress,
-      };
-    }
-
-    const expectedRunIdLower = expectedRunIdBytes32.toLowerCase();
-    const matchingRunEvents = events.filter(
-      (e) => e.runId.toLowerCase() === expectedRunIdLower
+    // Find transfer to treasury with sufficient amount
+    const matchingTransfer = transfers.find(
+      (t) => t.to === treasuryLower && t.value >= minAmount
     );
 
-    if (matchingRunEvents.length === 0) {
+    if (!matchingTransfer) {
       if (debugPay) {
-        console.log("[DEBUG_PAY] RunId mismatch:", {
-          expectedRunId: expectedRunIdLower,
-          events: events.map((e) => e.runId),
+        console.log("[DEBUG_PAY] No matching transfer:", {
+          transfers: transfers.map((t) => ({
+            from: t.from.slice(0, 12),
+            to: t.to.slice(0, 12),
+            value: t.value.toString(),
+          })),
         });
       }
-      return {
-        status: "invalid",
-        error: "Run ID mismatch",
-        reason: "runid_mismatch",
-        expected: expectedRunIdBytes32,
-        actual: events[0]?.runId ?? "unknown",
-      };
-    }
 
-    const matchingEvent = matchingRunEvents.find((e) => e.amountWei >= minValue);
-
-    if (!matchingEvent) {
-      if (debugPay) {
-        console.log("[DEBUG_PAY] Insufficient payment:", {
-          required: minValue.toString(),
-          got: matchingRunEvents.map((e) => e.amountWei.toString()),
-        });
+      // Check if there was a transfer to wrong address
+      if (transfers.length > 0) {
+        const anyTransfer = transfers[0];
+        if (anyTransfer.to !== treasuryLower) {
+          return {
+            status: "invalid",
+            error: "USDC sent to wrong address",
+            reason: "wrong_recipient",
+            expected: expectedTreasury,
+            actual: anyTransfer.to,
+          };
+        }
+        if (anyTransfer.value < minAmount) {
+          return {
+            status: "invalid",
+            error: "Insufficient USDC amount",
+            reason: "insufficient_payment",
+            expected: minAmount.toString(),
+            actual: anyTransfer.value.toString(),
+          };
+        }
       }
+
       return {
         status: "invalid",
-        error: "Insufficient payment",
-        reason: "insufficient_payment",
-        expected: minValue.toString(),
-        actual: matchingRunEvents[0]?.amountWei.toString() ?? "0",
+        error: "No USDC transfer to treasury found",
+        reason: "transfer_not_found",
       };
     }
 
@@ -342,163 +289,11 @@ export async function verifyContractPurchase(params: {
 
     return {
       status: "valid",
-      actualFrom: matchingEvent.buyer,
-      actualTo: contractAddress.toLowerCase(),
-      usedEvent: true,
-      buyer: matchingEvent.buyer,
+      buyer: matchingTransfer.from,
+      amount: matchingTransfer.value,
     };
   } catch (error) {
-    console.error("[Hints] Contract verify error:", error);
-    return { status: "invalid", error: "Verification failed", reason: "exception" };
-  }
-}
-
-/**
- * Verify transaction on Base chain.
- * Now uses tx.from as the authoritative sender (for smart wallet support).
- * Does NOT require expectedFrom to match - returns actualFrom for caller to use.
- */
-export async function verifyTransaction(params: {
-  txHash: string;
-  expectedTo: string;
-  minValue: bigint;
-}): Promise<TxVerifyResult> {
-  const { txHash, expectedTo, minValue } = params;
-  const debugPay = process.env.DEBUG_PAY === "1";
-
-  try {
-    const client = getBaseClient();
-
-    // Get transaction receipt (may throw if not found)
-    let receipt;
-    try {
-      receipt = await client.getTransactionReceipt({
-        hash: txHash as `0x${string}`,
-      });
-    } catch {
-      return { status: "pending", confirmations: 0, required: REQUIRED_CONFIRMATIONS };
-    }
-
-    if (!receipt) {
-      return { status: "pending", confirmations: 0, required: REQUIRED_CONFIRMATIONS };
-    }
-
-    if (receipt.status !== "success") {
-      return { status: "invalid", error: "Transaction failed", reason: "tx_failed" };
-    }
-
-    // Get transaction details for value
-    const tx = await client.getTransaction({
-      hash: txHash as `0x${string}`,
-    });
-
-    if (!tx) {
-      return { status: "invalid", error: "Transaction not found", reason: "tx_not_found" };
-    }
-
-    // Verify chain (some transaction variants may not include chainId)
-    const txChainId =
-      "chainId" in tx ? Number(tx.chainId ?? 0) : 8453;
-    if (txChainId !== 8453) {
-      return { status: "invalid", error: "Wrong chain", reason: "wrong_chain" };
-    }
-
-    // Get actual sender and recipient from tx (authoritative)
-    const actualFrom = tx.from.toLowerCase();
-    // Prefer tx.to, fallback to receipt.to if available
-    const actualTo = (tx.to ?? receipt.to ?? "").toLowerCase();
-    const expectedToLower = expectedTo.toLowerCase();
-
-    // Debug logging
-    if (debugPay) {
-      console.log("[DEBUG_PAY] Verification:", {
-        txHash: txHash.slice(0, 12) + "...",
-        txTo: tx.to?.slice(0, 12) + "...",
-        receiptTo: receipt.to ? receipt.to.slice(0, 12) + "..." : "null",
-        actualTo: actualTo.slice(0, 12) + "...",
-        expectedTo: expectedToLower.slice(0, 12) + "...",
-        txValue: tx.value.toString(),
-        minValue: minValue.toString(),
-        directMatch: actualTo === expectedToLower,
-      });
-    }
-
-    // Check if direct transfer to treasury
-    const isDirectTransfer = actualTo === expectedToLower;
-    let usedInternalTransfer = false;
-    let verifiedValue = tx.value;
-
-    if (!isDirectTransfer) {
-      // Not a direct transfer - try AA/smart wallet fallback via internal transactions
-      if (debugPay) {
-        console.log("[DEBUG_PAY] Direct transfer mismatch, checking internal transactions...");
-      }
-
-      const internalResult = await findInternalEthToAddress(txHash, expectedTo);
-
-      if (internalResult === null) {
-        // BaseScan API key not configured - can't verify internal transfers
-        return {
-          status: "invalid",
-          error: "Wrong recipient (smart wallet)",
-          reason: "aa_internal_transfer_unverified",
-          expected: expectedTo,
-          actual: actualTo || "unknown",
-          hint: "Set BASESCAN_API_KEY to verify smart wallet payments, or use an EOA wallet",
-        };
-      }
-
-      if (!internalResult.found || internalResult.totalWei < minValue) {
-        // No sufficient internal transfer found
-        if (debugPay) {
-          console.log("[DEBUG_PAY] No sufficient internal transfer found:", {
-            found: internalResult.found,
-            totalWei: internalResult.totalWei.toString(),
-            minValue: minValue.toString(),
-          });
-        }
-        return {
-          status: "invalid",
-          error: "Wrong recipient",
-          reason: "wrong_recipient",
-          expected: expectedTo,
-          actual: actualTo || "unknown",
-        };
-      }
-
-      // Found sufficient internal transfer to treasury
-      usedInternalTransfer = true;
-      verifiedValue = internalResult.totalWei;
-
-      if (debugPay) {
-        console.log("[DEBUG_PAY] Verified via internal transfer:", {
-          transfers: internalResult.transfers,
-          totalWei: internalResult.totalWei.toString(),
-        });
-      }
-    }
-
-    // Verify value (for direct transfers)
-    if (!usedInternalTransfer && verifiedValue < minValue) {
-      return {
-        status: "invalid",
-        error: "Insufficient payment",
-        reason: "insufficient_value",
-        expected: minValue.toString(),
-        actual: verifiedValue.toString(),
-      };
-    }
-
-    // Check confirmations
-    const currentBlock = await client.getBlockNumber();
-    const confirmations = Number(currentBlock - receipt.blockNumber);
-    if (confirmations < REQUIRED_CONFIRMATIONS) {
-      return { status: "pending", confirmations, required: REQUIRED_CONFIRMATIONS };
-    }
-
-    return { status: "valid", actualFrom, actualTo: expectedToLower, usedInternalTransfer };
-  } catch (error) {
-    console.error("[Hints] Verify tx error:", error);
+    console.error("[Hints] USDC verify error:", error);
     return { status: "invalid", error: "Verification failed", reason: "exception" };
   }
 }

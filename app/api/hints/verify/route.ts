@@ -3,11 +3,8 @@ import "@/lib/env";
 import { NextRequest, NextResponse } from "next/server";
 import {
   verifyIntentToken,
-  verifyTransaction,
-  verifyContractPurchase,
-  getHintsContractAddress,
+  verifyUsdcPurchase,
   HINTS_PACK_SIZE,
-  runIdToBytes32,
 } from "@/lib/hints";
 import { getDb } from "@/lib/db";
 
@@ -15,7 +12,7 @@ export const runtime = "nodejs";
 
 export async function POST(request: NextRequest) {
   try {
-    // NO auth token required - we verify via intent token + on-chain event/tx
+    // NO auth token required - we verify via intent token + USDC Transfer event
     const body = await request.json();
     const { intentToken, txHash } = body;
 
@@ -32,37 +29,23 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const contractAddress = intent.contractAddress || getHintsContractAddress();
-    let verification;
     const debugPay = process.env.DEBUG_PAY === "1";
-
-    // Prefer contract-based verification if contract is configured
-    if (contractAddress) {
-      console.log(`[verify] Using contract verification: ${contractAddress.slice(0, 10)}...`);
-      if (debugPay) {
-        console.log("[DEBUG_PAY] Contract mode enabled", {
-          contractAddress,
-          intentRunId: intent.runId,
-          intentRunIdBytes32: intent.runIdBytes32,
-        });
-      }
-      const expectedRunIdBytes32 = intent.runIdBytes32
-        ? intent.runIdBytes32
-        : runIdToBytes32(intent.runId);
-      verification = await verifyContractPurchase({
-        txHash,
-        expectedRunIdBytes32,
-        minValue: BigInt(intent.requiredWei),
-      });
-    } else {
-      // Fallback to legacy direct transfer verification
-      console.log("[verify] Using legacy transfer verification (no contract configured)");
-      verification = await verifyTransaction({
-        txHash,
-        expectedTo: intent.treasuryAddress,
-        minValue: BigInt(intent.requiredWei),
+    if (debugPay) {
+      console.log("[DEBUG_PAY] Verifying USDC purchase", {
+        txHash: txHash.slice(0, 12) + "...",
+        treasury: intent.treasuryAddress.slice(0, 12) + "...",
+        requiredUsdc: intent.requiredUsdc,
+        tokenAddress: intent.tokenAddress,
       });
     }
+
+    // Verify USDC Transfer to treasury
+    console.log(`[verify] USDC verification for ${txHash.slice(0, 12)}...`);
+    const verification = await verifyUsdcPurchase({
+      txHash,
+      expectedTreasury: intent.treasuryAddress,
+      minAmount: BigInt(intent.requiredUsdc),
+    });
 
     // Handle pending (not enough confirmations yet)
     if (verification.status === "pending") {
@@ -85,7 +68,6 @@ export async function POST(request: NextRequest) {
         reason: verification.reason,
         expected: verification.expected?.slice(0, 12),
         actual: verification.actual?.slice(0, 12),
-        hint: verification.hint,
       });
 
       return NextResponse.json(
@@ -98,31 +80,22 @@ export async function POST(request: NextRequest) {
             expected: verification.expected,
             actual: verification.actual,
           }),
-          ...(verification.reason === "event_not_found" && {
-            contractAddress: verification.expected,
-          }),
-          ...(verification.reason === "runid_mismatch" && {
-            expectedRunIdBytes32: verification.expected,
-            gotRunIdBytes32: verification.actual,
+          ...(verification.reason === "transfer_not_found" && {
+            tokenAddress: intent.tokenAddress,
+            treasuryAddress: intent.treasuryAddress,
           }),
           ...(verification.reason === "insufficient_payment" && {
-            requiredWei: verification.expected,
-            gotWei: verification.actual,
-          }),
-          // Include hint for AA wallets without API key
-          ...(verification.reason === "aa_internal_transfer_unverified" && {
-            hint: verification.hint,
-            isSmartWallet: true,
+            requiredUsdc: verification.expected,
+            gotUsdc: verification.actual,
           }),
         },
         { status: 400 }
       );
     }
 
-    // Use buyer from event (if available) or tx.from as authoritative
-    const actualSender = verification.buyer || verification.actualFrom;
-    const usedEvent = verification.usedEvent || false;
-    console.log(`[verify] Tx ${txHash.slice(0, 10)}... buyer ${actualSender.slice(0, 10)}... (event: ${usedEvent})`);
+    // Use buyer from Transfer event (authoritative)
+    const actualSender = verification.buyer;
+    console.log(`[verify] Tx ${txHash.slice(0, 10)}... buyer ${actualSender.slice(0, 10)}... amount ${verification.amount.toString()}`);
 
     const db = await getDb();
 
@@ -241,9 +214,8 @@ export async function POST(request: NextRequest) {
       ok: true,
       addedHints: HINTS_PACK_SIZE,
       purchasedHints,
-      actualSender,
-      usedEvent,
-      usedInternalTransfer: verification.usedInternalTransfer || false,
+      buyer: actualSender,
+      paidUsdc: verification.amount.toString(),
     });
   } catch (error) {
     console.error("[verify] Error:", error);

@@ -2,11 +2,12 @@ import "@/lib/env";
 
 import { NextRequest, NextResponse } from "next/server";
 import {
-  calculateRequiredWei,
   getTreasuryAddress,
-  getHintsContractAddress,
   runIdToBytes32,
   signIntentToken,
+  getRequiredUsdc,
+  USDC_ADDRESS,
+  USDC_DECIMALS,
   HINTS_PACK_SIZE,
   INTENT_EXPIRY_SECONDS,
   type IntentPayload,
@@ -30,13 +31,12 @@ export async function POST(request: NextRequest) {
       envLocalExists: fs.existsSync(envLocalPath),
       hasHintsSecret: Boolean(process.env.HINTS_PAYMENT_SECRET),
       hasAuthSecret: Boolean(process.env.AUTH_TOKEN_SECRET),
-      hasContractAddress: Boolean(process.env.HINTS_CONTRACT_ADDRESS),
     });
   }
 
   try {
     // Parse body - NO auth token required for hint purchases
-    // We verify ownership via on-chain event or tx.from
+    // We verify ownership via USDC Transfer event
     const body = await request.json();
     const { runId, address } = body;
 
@@ -48,24 +48,23 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "Missing or invalid wallet address" }, { status: 400 });
     }
 
-    // Calculate price
-    const requiredWei = await calculateRequiredWei();
+    // USDC payment details
+    const requiredUsdc = getRequiredUsdc();
     const treasuryAddress = getTreasuryAddress();
-    const contractAddress = getHintsContractAddress();
 
     const iat = Math.floor(Date.now() / 1000);
     const exp = iat + INTENT_EXPIRY_SECONDS;
 
-    // Convert runId to bytes32 for contract call
+    // Convert runId to bytes32 (for tracking)
     const runIdBytes32 = runIdToBytes32(runId);
 
     const intentPayload: IntentPayload = {
       runId,
       runIdBytes32,
       address: address.toLowerCase(),
-      requiredWei: requiredWei.toString(),
+      requiredUsdc: requiredUsdc.toString(),
+      tokenAddress: USDC_ADDRESS,
       treasuryAddress,
-      contractAddress: contractAddress || null,
       packSize: HINTS_PACK_SIZE,
       iat,
       exp,
@@ -73,16 +72,16 @@ export async function POST(request: NextRequest) {
 
     const intentToken = signIntentToken(intentPayload);
 
-    console.log("[create-intent] Created intent for address:", address.toLowerCase().slice(0, 10) + "...");
+    console.log("[create-intent] USDC intent for:", address.toLowerCase().slice(0, 10) + "...", "amount:", requiredUsdc.toString());
 
     return NextResponse.json({
       intentToken,
-      requiredWei: requiredWei.toString(),
+      // USDC payment details
+      requiredUsdc: requiredUsdc.toString(),
+      tokenAddress: USDC_ADDRESS,
+      tokenDecimals: USDC_DECIMALS,
       treasuryAddress,
-      // Contract-based purchase (preferred)
-      contractAddress: contractAddress || null,
       runIdBytes32,
-      // Legacy fields
       expiresAt: exp,
       packSize: HINTS_PACK_SIZE,
     });

@@ -1,12 +1,12 @@
 import "@/lib/env";
 
 import { NextRequest, NextResponse } from "next/server";
-import { createPublicClient, http } from "viem";
+import { createPublicClient, http, type Log } from "viem";
 import { base } from "viem/chains";
 import {
-  parseHintsPurchasedEvents,
-  getHintsContractAddress,
-  runIdToBytes32,
+  parseTransferEvents,
+  getTreasuryAddress,
+  USDC_ADDRESS,
 } from "@/lib/hints";
 
 export const runtime = "nodejs";
@@ -20,8 +20,6 @@ export async function GET(request: NextRequest) {
   }
 
   const txHash = request.nextUrl.searchParams.get("txHash");
-  const runId = request.nextUrl.searchParams.get("runId");
-  const runIdBytes32Param = request.nextUrl.searchParams.get("runIdBytes32");
 
   if (!txHash || !txHash.startsWith("0x")) {
     return NextResponse.json({ error: "Missing or invalid txHash" }, { status: 400 });
@@ -38,21 +36,23 @@ export async function GET(request: NextRequest) {
       client.getTransactionReceipt({ hash: txHash as `0x${string}` }),
     ]);
 
-    const events = receipt?.logs ? parseHintsPurchasedEvents(receipt.logs) : [];
-    const expectedRunIdBytes32 =
-      runIdBytes32Param || (runId ? runIdToBytes32(runId) : null);
+    const transfers = receipt?.logs
+      ? parseTransferEvents(receipt.logs as Log[], USDC_ADDRESS)
+      : [];
+    const treasury = getTreasuryAddress().toLowerCase();
 
     return NextResponse.json({
       txHash,
       txTo: tx?.to || null,
       receiptTo: receipt?.to || null,
-      contractAddress: getHintsContractAddress(),
-      expectedRunIdBytes32,
-      foundEvents: events.map((e) => ({
-        buyer: e.buyer,
-        runId: e.runId,
-        amountWei: e.amountWei.toString(),
-        hints: e.hints.toString(),
+      usdcAddress: USDC_ADDRESS,
+      treasuryAddress: getTreasuryAddress(),
+      foundTransfers: transfers.map((t) => ({
+        from: t.from,
+        to: t.to,
+        value: t.value.toString(),
+        valueUsdc: (Number(t.value) / 1_000_000).toFixed(2),
+        isToTreasury: t.to === treasury,
       })),
     });
   } catch (error) {

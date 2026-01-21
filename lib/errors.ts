@@ -17,9 +17,11 @@ const ERROR_PATTERNS: Array<{ pattern: RegExp | string; message: string }> = [
   { pattern: /switch.*chain/i, message: "Please switch to Base" },
 
   // Funds errors
-  { pattern: /insufficient funds/i, message: "Not enough ETH for gas" },
-  { pattern: /exceeds.*balance/i, message: "Not enough ETH for gas" },
-  { pattern: /gas/i, message: "Not enough ETH for gas" },
+  { pattern: /insufficient funds/i, message: "Not enough funds for gas" },
+  { pattern: /exceeds.*balance/i, message: "Not enough balance" },
+  { pattern: /gas/i, message: "Not enough funds for gas" },
+  { pattern: /transfer_not_found/i, message: "No USDC transfer found. Please try again" },
+  { pattern: /insufficient.*usdc/i, message: "Insufficient USDC amount" },
 
   // Sender errors
   { pattern: /wrong sender/i, message: "Payment sent from different address. Please retry" },
