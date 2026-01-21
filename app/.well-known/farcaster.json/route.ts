@@ -52,7 +52,7 @@ export async function GET(request: Request) {
       // Webhook for notifications (stub endpoint)
       webhookUrl: `${origin}/api/webhook`,
       // Indexing
-      noindex: false,
+      noindex: true,
     },
   });
 }
