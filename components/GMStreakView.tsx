@@ -89,7 +89,7 @@ function triggerConfetti(canvas: HTMLCanvasElement) {
 
 type Props = {
   authToken: string | null;
-  onBack: () => void;
+  onBack?: () => void;
 };
 
 export default function GMStreakView({ authToken, onBack }: Props) {

@@ -1,9 +1,35 @@
-import type { Board, Coord, MatchEvent } from "./types";
+import type { Board, Coord, MatchEvent, PowerType } from "./types";
 import { GRID_SIZE } from "./constants";
 
 /**
+ * Determine if a match should spawn a power tile, and where.
+ * - Match-5+: Bomb (spawns at middle cell)
+ * - Match-4: Row clear (horizontal) or Col clear (vertical)
+ * - Match-3: No power
+ */
+function getPowerForMatch(
+  cells: Coord[],
+  isHorizontal: boolean
+): { powerType: PowerType; spawnCell: Coord } | null {
+  if (cells.length >= 5) {
+    // Bomb for match-5+
+    const midIndex = Math.floor(cells.length / 2);
+    return { powerType: "bomb", spawnCell: cells[midIndex] };
+  }
+  if (cells.length === 4) {
+    // Row/col clear for match-4
+    const midIndex = Math.floor(cells.length / 2);
+    return {
+      powerType: isHorizontal ? "row" : "col",
+      spawnCell: cells[midIndex],
+    };
+  }
+  return null;
+}
+
+/**
  * Find all matches (3+ in a row/col) on the board.
- * Returns an array of MatchEvent.
+ * Returns an array of MatchEvent with power tile info.
  */
 export function findMatches(board: Board): MatchEvent[] {
   const matches: MatchEvent[] = [];
@@ -23,12 +49,19 @@ export function findMatches(board: Board): MatchEvent[] {
         c++;
       }
       if (cells.length >= 3) {
-        // Check if any cell in this run is already part of a match (for dedup later)
+        // Check if any cell in this run is already part of a match
         const alreadyVisited = cells.some((cell) =>
           visited.has(key(cell.row, cell.col))
         );
         if (!alreadyVisited) {
-          matches.push({ token, length: cells.length, cells });
+          const power = getPowerForMatch(cells, true);
+          matches.push({
+            token,
+            length: cells.length,
+            cells,
+            powerSpawnCell: power?.spawnCell,
+            powerType: power?.powerType,
+          });
           cells.forEach((cell) => visited.add(key(cell.row, cell.col)));
         }
       }
@@ -48,9 +81,14 @@ export function findMatches(board: Board): MatchEvent[] {
         r++;
       }
       if (cells.length >= 3) {
-        // For vertical, we might overlap with horizontal matches; that's fine,
-        // we'll dedupe cleared cells later
-        matches.push({ token, length: cells.length, cells });
+        const power = getPowerForMatch(cells, false);
+        matches.push({
+          token,
+          length: cells.length,
+          cells,
+          powerSpawnCell: power?.spawnCell,
+          powerType: power?.powerType,
+        });
       }
       row = r;
     }

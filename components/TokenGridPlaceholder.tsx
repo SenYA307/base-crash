@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, useRef, useCallback } from "react";
-import type { TileBoard, Coord, TokenType, TileMovement } from "@/game";
+import type { TileBoard, Coord, TokenType, TileMovement, PowerType } from "@/game";
 import { GRID_SIZE, ACTIVE_TOKENS, areAdjacent } from "@/game";
 
 // Token color map for fallback
@@ -73,31 +73,60 @@ function isHintCell(coord: Coord, hintCells: Coord[]): boolean {
   return hintCells.some((h) => h.row === coord.row && h.col === coord.col);
 }
 
-function TileImage({ token }: { token: TokenType }) {
+function PowerIndicator({ power }: { power: PowerType }) {
+  if (!power) return null;
+
+  const getIndicator = () => {
+    switch (power) {
+      case "row":
+        return "↔"; // horizontal line
+      case "col":
+        return "↕"; // vertical line
+      case "bomb":
+        return "💥"; // bomb
+      default:
+        return null;
+    }
+  };
+
+  return (
+    <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+      <span className="text-lg font-bold text-white drop-shadow-[0_0_4px_rgba(255,255,255,0.8)]">
+        {getIndicator()}
+      </span>
+    </div>
+  );
+}
+
+function TileImage({ token, power }: { token: TokenType; power?: PowerType }) {
   const [hasError, setHasError] = useState(failedIcons.has(token));
 
   if (hasError || !activeTokenSet.has(token)) {
     return (
       <div
-        className="tile-fallback"
+        className={`tile-fallback relative ${power ? "ring-2 ring-white/50 animate-pulse" : ""}`}
         style={{ backgroundColor: TOKEN_COLORS[token] || "#555" }}
       >
         {TOKEN_LABELS[token] || "?"}
+        <PowerIndicator power={power} />
       </div>
     );
   }
 
   return (
-    <img
-      src={getTokenIconSrc(token)}
-      alt={token}
-      className="tile-image"
-      draggable={false}
-      onError={() => {
-        failedIcons.add(token);
-        setHasError(true);
-      }}
-    />
+    <div className={`relative w-full h-full ${power ? "ring-2 ring-white/50 rounded-lg" : ""}`}>
+      <img
+        src={getTokenIconSrc(token)}
+        alt={token}
+        className={`tile-image ${power ? "animate-pulse" : ""}`}
+        draggable={false}
+        onError={() => {
+          failedIcons.add(token);
+          setHasError(true);
+        }}
+      />
+      <PowerIndicator power={power} />
+    </div>
   );
 }
 

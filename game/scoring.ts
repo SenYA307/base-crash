@@ -1,4 +1,4 @@
-import type { MatchEvent } from "./types";
+import type { MatchEvent, PowerType } from "./types";
 
 /**
  * Calculate points for a single match event.
@@ -23,6 +23,15 @@ export function cascadeMultiplier(step: number): number {
 }
 
 /**
+ * Bonus points for power tile activation.
+ */
+export function pointsForPowerActivation(powerType: PowerType): number {
+  if (powerType === "row" || powerType === "col") return 150;
+  if (powerType === "bomb") return 250;
+  return 0;
+}
+
+/**
  * Calculate total points for a set of matches at a given cascade step.
  */
 export function calculateStepPoints(
@@ -34,4 +43,11 @@ export function calculateStepPoints(
     0
   );
   return Math.round(basePoints * cascadeMultiplier(step));
+}
+
+/**
+ * Calculate points for power tile activations.
+ */
+export function calculatePowerPoints(powerTypes: PowerType[]): number {
+  return powerTypes.reduce((sum, pt) => sum + pointsForPowerActivation(pt), 0);
 }
