@@ -29,35 +29,70 @@ export async function POST(request: Request) {
 
     const body = await request.json();
     const rawScore = body?.score;
-    const durationMs = body?.durationMs;
-    const movesUsed = body?.movesUsed;
+    let durationMs = body?.durationMs;
+    let movesUsed = body?.movesUsed;
     const hintsUsed = body?.hintsUsed ?? null;
     const gameVersion = body?.gameVersion ?? null;
 
+    // Validate score
     if (!Number.isInteger(rawScore) || rawScore < 0) {
-      return NextResponse.json({ error: "Invalid score" }, { status: 400 });
+      return NextResponse.json(
+        { ok: false, error: "Invalid score", reason: "invalid_score" },
+        { status: 400 }
+      );
     }
+
+    // Validate and sanitize durationMs
+    const MIN_DURATION_MS = 5000;
+    const MAX_DURATION_MS = 30 * 60 * 1000;
+    const DEFAULT_DURATION_MS = 30000;
+
     if (
-      !Number.isInteger(durationMs) ||
-      durationMs < 5000 ||
-      durationMs > 30 * 60 * 1000
+      typeof durationMs !== "number" ||
+      !Number.isFinite(durationMs) ||
+      Number.isNaN(durationMs) ||
+      durationMs <= 0
     ) {
+      // Missing or invalid - use default instead of rejecting
+      console.log(`[score/submit] Invalid durationMs received: ${durationMs}, using default`);
+      durationMs = DEFAULT_DURATION_MS;
+    } else if (durationMs < MIN_DURATION_MS) {
+      // Too short - possible cheating
       return NextResponse.json(
-        { error: "Invalid durationMs" },
+        {
+          ok: false,
+          error: "Game too short",
+          reason: "invalid_durationMs",
+          received: durationMs,
+          min: MIN_DURATION_MS,
+          max: MAX_DURATION_MS,
+        },
         { status: 400 }
       );
+    } else if (durationMs > MAX_DURATION_MS) {
+      // Cap at maximum (could be clock drift, don't reject)
+      console.log(`[score/submit] Duration capped: ${durationMs} -> ${MAX_DURATION_MS}`);
+      durationMs = MAX_DURATION_MS;
     }
-    if (!Number.isInteger(movesUsed) || movesUsed < 0 || movesUsed > 30) {
-      return NextResponse.json(
-        { error: "Invalid movesUsed" },
-        { status: 400 }
-      );
+
+    // Ensure it's an integer
+    durationMs = Math.round(durationMs);
+
+    // Validate movesUsed - be lenient
+    if (
+      typeof movesUsed !== "number" ||
+      !Number.isFinite(movesUsed) ||
+      movesUsed < 0
+    ) {
+      movesUsed = 0; // Default to 0 if invalid
+    } else if (movesUsed > 100) {
+      movesUsed = 100; // Cap at reasonable max
     }
-    if (hintsUsed !== null && !Number.isInteger(hintsUsed)) {
-      return NextResponse.json(
-        { error: "Invalid hintsUsed" },
-        { status: 400 }
-      );
+    movesUsed = Math.round(movesUsed);
+
+    // Validate hintsUsed - be lenient
+    if (hintsUsed !== null && (!Number.isInteger(hintsUsed) || hintsUsed < 0)) {
+      // Invalid hints - just set to null
     }
 
     // Support both wallet auth (address) and Quick Auth (fid)

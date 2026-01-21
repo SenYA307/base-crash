@@ -31,6 +31,7 @@ import {
   applySwap,
   findHintMove,
   areAdjacent,
+  INITIAL_MOVES,
   type GameState,
   type Coord,
   type TileMovement,
@@ -854,6 +855,24 @@ export default function Home() {
 
     try {
       setIsSubmitting(true);
+
+      // Compute durationMs from gameStartAt
+      let durationMs = 30000; // fallback
+      if (gameStartAt && gameStartAt > 0) {
+        durationMs = Math.max(1, Math.round(Date.now() - gameStartAt));
+      } else if (process.env.NODE_ENV === "development") {
+        console.warn("[submit] gameStartAt missing, using fallback durationMs");
+      }
+
+      // Ensure it's an integer and not NaN
+      if (!Number.isFinite(durationMs) || durationMs <= 0) {
+        durationMs = 30000;
+      }
+
+      // Calculate moves used (initial - remaining)
+      const movesUsed = INITIAL_MOVES - gameState.moves;
+      const hintsUsed = freeHintsUsed + (HINTS_PACK_SIZE * Math.max(0, Math.ceil((purchasedHintsRemaining > 0 ? 1 : 0))));
+
       const res = await fetch("/api/score/submit", {
         method: "POST",
         headers: {
@@ -863,11 +882,18 @@ export default function Home() {
         body: JSON.stringify({
           score: gameState.score,
           runId,
+          durationMs,
+          movesUsed,
+          hintsUsed: freeHintsUsed,
         }),
       });
       const data = await res.json();
       if (!res.ok) {
-        throw new Error(data.error || "Failed to submit score");
+        // Handle specific error reasons
+        if (data.reason === "invalid_durationMs") {
+          throw new Error("Please play at least a few seconds before submitting.");
+        }
+        throw new Error(data.error || "Couldn't submit score. Please try again.");
       }
       showToast("Score submitted!");
       setActiveTab("leaderboard");
@@ -876,7 +902,7 @@ export default function Home() {
     } finally {
       setIsSubmitting(false);
     }
-  }, [gameState, authToken, runId, showToast]);
+  }, [gameState, authToken, runId, gameStartAt, freeHintsUsed, purchasedHintsRemaining, showToast]);
 
   // ===============================
   // Render Helpers
