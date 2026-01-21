@@ -28,14 +28,31 @@ export async function GET(request: Request) {
     miniapp: {
       version: "1",
       name: "Base Crash",
+      subtitle: "Match3 on Base",
       description: "Base Crash mini app game.",
+      tagline: "Match3. Combo. Win.",
       iconUrl: `${origin}/assets/miniapp/icon.png`,
       splashImageUrl: `${origin}/assets/miniapp/splash.svg`,
       splashBackgroundColor: "#0b1020",
       homeUrl: origin,
       primaryCategory: "games",
       tags: ["match3", "base", "arcade", "crypto", "game"],
+      // OG metadata
+      ogTitle: "Base Crash",
+      ogDescription: "Match-3 on Base. Combos, streaks, leaderboard.",
+      ogImageUrl: `${origin}/assets/miniapp/og.png`,
+      // Hero image (same as OG)
+      heroImageUrl: `${origin}/assets/miniapp/hero.png`,
+      // Screenshots (portrait 1284x2778)
+      screenshotUrls: [
+        `${origin}/assets/miniapp/s1.png`,
+        `${origin}/assets/miniapp/s2.png`,
+        `${origin}/assets/miniapp/s3.png`,
+      ],
+      // Webhook for notifications (stub endpoint)
+      webhookUrl: `${origin}/api/webhook`,
+      // Indexing
+      noindex: false,
     },
-    ...(hasAssociation ? {} : { noindex: true }),
   });
 }

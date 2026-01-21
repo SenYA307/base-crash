@@ -17,19 +17,19 @@ const APP_URL = process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000";
 
 export const metadata: Metadata = {
   title: "Base Crash",
-  description: "Base Crash mini app game.",
+  description: "Match-3 on Base. Combos, streaks, leaderboard.",
   metadataBase: new URL(APP_URL),
   openGraph: {
     title: "Base Crash",
-    description: "Base Crash mini app game.",
+    description: "Match-3 on Base. Combos, streaks, leaderboard.",
     url: APP_URL,
-    images: ["/assets/miniapp/og.svg"],
+    images: ["/assets/miniapp/og.png"],
   },
   twitter: {
     card: "summary_large_image",
     title: "Base Crash",
-    description: "Base Crash mini app game.",
-    images: ["/assets/miniapp/og.svg"],
+    description: "Match-3 on Base. Combos, streaks, leaderboard.",
+    images: ["/assets/miniapp/og.png"],
   },
 };
 
@@ -50,9 +50,9 @@ export default function RootLayout({
         <meta property="og:title" content="Base Crash" />
         <meta
           property="og:description"
-          content="Base Crash mini app game."
+          content="Match-3 on Base. Combos, streaks, leaderboard."
         />
-        <meta property="og:image" content={`${APP_URL}/assets/miniapp/og.svg`} />
+        <meta property="og:image" content={`${APP_URL}/assets/miniapp/og.png`} />
       </head>
       <body
         className={`${geistSans.variable} ${geistMono.variable} antialiased`}
