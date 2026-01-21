@@ -16,18 +16,43 @@ function getDbConfig() {
   return { url, authToken };
 }
 
+/**
+ * Safely add a column to a table. Ignores errors if the column already exists.
+ */
+async function safeAddColumn(
+  client: Client,
+  table: string,
+  column: string,
+  definition: string
+): Promise<void> {
+  try {
+    await client.execute(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition};`);
+    console.log(`[db] Added column ${table}.${column}`);
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    // Ignore "duplicate column name" errors (SQLite/Turso)
+    if (
+      message.includes("duplicate column") ||
+      message.includes("already exists") ||
+      message.includes("SQLITE_ERROR")
+    ) {
+      // Column already exists, ignore
+    } else {
+      console.error(`[db] Error adding column ${table}.${column}:`, message);
+      // Don't throw - let the app continue
+    }
+  }
+}
+
 async function ensureInitialized(client: Client) {
   if (!initPromise) {
     initPromise = (async () => {
-      // Scores table with raw_score and final_score for referral boost
+      // Scores table - base schema (may already exist without new columns)
       await client.execute(`
         CREATE TABLE IF NOT EXISTS scores (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           address TEXT NOT NULL,
           score INTEGER NOT NULL,
-          raw_score INTEGER,
-          final_score INTEGER,
-          boost_multiplier REAL DEFAULT 1.0,
           created_at INTEGER NOT NULL,
           game_version TEXT,
           duration_ms INTEGER,
@@ -35,15 +60,27 @@ async function ensureInitialized(client: Client) {
           hints_used INTEGER
         );
       `);
+
+      // Add new columns for referral boost (safe migration)
+      await safeAddColumn(client, "scores", "raw_score", "INTEGER");
+      await safeAddColumn(client, "scores", "final_score", "INTEGER");
+      await safeAddColumn(client, "scores", "boost_multiplier", "REAL DEFAULT 1.0");
+
+      // Create indexes
       await client.execute(
         `CREATE INDEX IF NOT EXISTS idx_scores_created_at ON scores (created_at);`
       );
       await client.execute(
         `CREATE INDEX IF NOT EXISTS idx_scores_score ON scores (score);`
       );
-      await client.execute(
-        `CREATE INDEX IF NOT EXISTS idx_scores_final_score ON scores (final_score);`
-      );
+      // Index on final_score only if column exists (best effort)
+      try {
+        await client.execute(
+          `CREATE INDEX IF NOT EXISTS idx_scores_final_score ON scores (final_score);`
+        );
+      } catch {
+        // Ignore if column doesn't exist yet
+      }
 
       // Hint purchases
       await client.execute(`
@@ -107,16 +144,7 @@ async function ensureInitialized(client: Client) {
         );
       `);
 
-      // Add columns to scores if they don't exist (migration for existing DBs)
-      try {
-        await client.execute(`ALTER TABLE scores ADD COLUMN raw_score INTEGER;`);
-      } catch { /* column already exists */ }
-      try {
-        await client.execute(`ALTER TABLE scores ADD COLUMN final_score INTEGER;`);
-      } catch { /* column already exists */ }
-      try {
-        await client.execute(`ALTER TABLE scores ADD COLUMN boost_multiplier REAL DEFAULT 1.0;`);
-      } catch { /* column already exists */ }
+      console.log("[db] Schema initialization complete");
     })();
   }
 

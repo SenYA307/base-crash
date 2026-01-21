@@ -219,8 +219,16 @@ export async function POST(request: NextRequest) {
     });
   } catch (error) {
     console.error("[verify] Error:", error);
+    const message = error instanceof Error ? error.message : String(error);
+    
+    // Return structured error, never crash
     return NextResponse.json(
-      { error: "Internal server error" },
+      {
+        ok: false,
+        error: "Verification error",
+        reason: "exception",
+        message: message.slice(0, 200), // Limit error message length
+      },
       { status: 500 }
     );
   }

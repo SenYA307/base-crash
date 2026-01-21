@@ -65,27 +65,35 @@ export function AccountView({
   const isAuthed = !!authToken && (!!authAddress || !!authFid);
   const [referralInfo, setReferralInfo] = useState<ReferralInfo | null>(null);
   const [referralLoading, setReferralLoading] = useState(false);
+  const [referralError, setReferralError] = useState<string | null>(null);
   const [copySuccess, setCopySuccess] = useState(false);
 
   // Fetch referral info when authed
   useEffect(() => {
     if (!authToken || !isAuthed) {
       setReferralInfo(null);
+      setReferralError(null);
       return;
     }
 
     const fetchReferralInfo = async () => {
       try {
         setReferralLoading(true);
+        setReferralError(null);
         const res = await fetch("/api/referral/me", {
           headers: { Authorization: `Bearer ${authToken}` },
         });
-        if (res.ok) {
-          const data = await res.json();
+        const data = await res.json();
+        if (res.ok && data.code) {
           setReferralInfo(data);
+        } else if (res.status === 401) {
+          // Not signed in or token expired - not an error, just no data
+          setReferralInfo(null);
+        } else {
+          setReferralError(data.message || "Failed to load referral info");
         }
       } catch {
-        // Ignore errors
+        setReferralError("Network error");
       } finally {
         setReferralLoading(false);
       }
@@ -286,8 +294,10 @@ export function AccountView({
                 </div>
               )}
             </div>
+          ) : referralError ? (
+            <p className="text-xs text-red-400">{referralError}</p>
           ) : (
-            <p className="text-xs text-white/40">Unable to load referral info</p>
+            <p className="text-xs text-white/40">Loading referral info...</p>
           )}
         </div>
       )}

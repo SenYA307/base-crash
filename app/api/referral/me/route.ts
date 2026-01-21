@@ -15,7 +15,7 @@ export async function GET(request: NextRequest) {
 
     if (!token) {
       return NextResponse.json(
-        { error: "Authentication required" },
+        { ok: false, error: "not_signed_in", message: "Sign in to get your referral link" },
         { status: 401 }
       );
     }
@@ -23,7 +23,7 @@ export async function GET(request: NextRequest) {
     const payload = verifyAuthToken(token);
     if (!payload) {
       return NextResponse.json(
-        { error: "Invalid or expired token" },
+        { ok: false, error: "token_expired", message: "Session expired, please sign in again" },
         { status: 401 }
       );
     }

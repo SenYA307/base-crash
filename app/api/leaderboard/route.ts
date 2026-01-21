@@ -6,6 +6,120 @@ export const runtime = "nodejs";
 
 type Mode = "daily" | "weekly" | "alltime";
 
+type LeaderboardRow = {
+  address: string;
+  score: number;
+  created_at: number;
+};
+
+/**
+ * Run leaderboard query with fallback for schema compatibility.
+ * First tries with final_score column, falls back to score-only if column doesn't exist.
+ */
+async function runLeaderboardQuery(
+  db: Awaited<ReturnType<typeof getDb>>,
+  mode: Mode,
+  limit: number,
+  now: Date
+): Promise<LeaderboardRow[]> {
+  // Try with new columns first
+  const newScoreExpr = "COALESCE(final_score, score)";
+  
+  try {
+    let result;
+    if (mode === "daily") {
+      const start = getDayStartUtc(now);
+      result = await db.execute({
+        sql: `SELECT address, ${newScoreExpr} as score, created_at
+              FROM scores
+              WHERE created_at >= ?
+              ORDER BY ${newScoreExpr} DESC, created_at ASC
+              LIMIT ?`,
+        args: [start, limit],
+      });
+    } else if (mode === "weekly") {
+      const weekStart = getWeekStartUtc(now);
+      const weekEnd = getWeekEndUtc(now);
+      result = await db.execute({
+        sql: `SELECT address, ${newScoreExpr} as score, created_at
+              FROM scores
+              WHERE created_at >= ? AND created_at <= ?
+              ORDER BY ${newScoreExpr} DESC, created_at ASC
+              LIMIT ?`,
+        args: [weekStart, weekEnd, limit],
+      });
+    } else {
+      result = await db.execute({
+        sql: `SELECT address, ${newScoreExpr} as score, created_at
+              FROM scores
+              ORDER BY ${newScoreExpr} DESC, created_at ASC
+              LIMIT ?`,
+        args: [limit],
+      });
+    }
+    return result.rows.map((row) => ({
+      address: String(row.address),
+      score: Number(row.score ?? 0),
+      created_at: Number(row.created_at),
+    }));
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    // If column doesn't exist, fall back to legacy query
+    if (message.includes("no such column") || message.includes("final_score")) {
+      console.log("[leaderboard] Falling back to legacy query (no final_score column)");
+      return runLegacyQuery(db, mode, limit, now);
+    }
+    throw err;
+  }
+}
+
+/**
+ * Legacy query using only score column.
+ */
+async function runLegacyQuery(
+  db: Awaited<ReturnType<typeof getDb>>,
+  mode: Mode,
+  limit: number,
+  now: Date
+): Promise<LeaderboardRow[]> {
+  let result;
+  if (mode === "daily") {
+    const start = getDayStartUtc(now);
+    result = await db.execute({
+      sql: `SELECT address, score, created_at
+            FROM scores
+            WHERE created_at >= ?
+            ORDER BY score DESC, created_at ASC
+            LIMIT ?`,
+      args: [start, limit],
+    });
+  } else if (mode === "weekly") {
+    const weekStart = getWeekStartUtc(now);
+    const weekEnd = getWeekEndUtc(now);
+    result = await db.execute({
+      sql: `SELECT address, score, created_at
+            FROM scores
+            WHERE created_at >= ? AND created_at <= ?
+            ORDER BY score DESC, created_at ASC
+            LIMIT ?`,
+      args: [weekStart, weekEnd, limit],
+    });
+  } else {
+    result = await db.execute({
+      sql: `SELECT address, score, created_at
+            FROM scores
+            ORDER BY score DESC, created_at ASC
+            LIMIT ?`,
+      args: [limit],
+    });
+  }
+  return result.rows.map((row) => ({
+    address: String(row.address),
+    score: Number(row.score ?? 0),
+    created_at: Number(row.created_at),
+  }));
+}
+
 export async function GET(request: Request) {
   try {
     const { searchParams } = new URL(request.url);
@@ -18,60 +132,7 @@ export async function GET(request: Request) {
     const db = await getDb();
     const now = new Date();
 
-    // Use COALESCE to fall back to score if final_score is null (for old entries)
-    const scoreColumn = "COALESCE(final_score, score)";
-
-    let rows: { address: string; score: number; created_at: number; raw_score: number | null }[] = [];
-
-    if (mode === "daily") {
-      const start = getDayStartUtc(now);
-      const result = await db.execute({
-        sql: `SELECT address, ${scoreColumn} as score, raw_score, created_at
-              FROM scores
-              WHERE created_at >= ?
-              ORDER BY ${scoreColumn} DESC, created_at ASC
-              LIMIT ?`,
-        args: [start, limit],
-      });
-      rows = result.rows.map((row) => ({
-        address: String(row.address),
-        score: Number(row.score),
-        raw_score: row.raw_score != null ? Number(row.raw_score) : null,
-        created_at: Number(row.created_at),
-      }));
-    } else if (mode === "weekly") {
-      const weekStart = getWeekStartUtc(now);
-      const weekEnd = getWeekEndUtc(now);
-      const result = await db.execute({
-        sql: `SELECT address, ${scoreColumn} as score, raw_score, created_at
-              FROM scores
-              WHERE created_at >= ? AND created_at <= ?
-              ORDER BY ${scoreColumn} DESC, created_at ASC
-              LIMIT ?`,
-        args: [weekStart, weekEnd, limit],
-      });
-      rows = result.rows.map((row) => ({
-        address: String(row.address),
-        score: Number(row.score),
-        raw_score: row.raw_score != null ? Number(row.raw_score) : null,
-        created_at: Number(row.created_at),
-      }));
-    } else {
-      // alltime
-      const result = await db.execute({
-        sql: `SELECT address, ${scoreColumn} as score, raw_score, created_at
-              FROM scores
-              ORDER BY ${scoreColumn} DESC, created_at ASC
-              LIMIT ?`,
-        args: [limit],
-      });
-      rows = result.rows.map((row) => ({
-        address: String(row.address),
-        score: Number(row.score),
-        raw_score: row.raw_score != null ? Number(row.raw_score) : null,
-        created_at: Number(row.created_at),
-      }));
-    }
+    const rows = await runLeaderboardQuery(db, mode, limit, now);
 
     const withRank = rows.map((row, index) => ({
       rank: index + 1,
