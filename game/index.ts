@@ -9,6 +9,7 @@ export type {
   ResolveStep,
   TileMovement,
   GameState,
+  PowerType,
 } from "./types";
 
 export {

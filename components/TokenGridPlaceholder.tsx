@@ -73,7 +73,7 @@ function isHintCell(coord: Coord, hintCells: Coord[]): boolean {
   return hintCells.some((h) => h.row === coord.row && h.col === coord.col);
 }
 
-function PowerIndicator({ power }: { power: PowerType }) {
+function PowerIndicator({ power }: { power?: PowerType }) {
   if (!power) return null;
 
   const getIndicator = () => {
