@@ -211,7 +211,7 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
-    sdk.actions.ready();
+    sdk.actions.ready({ disableNativeGestures: true });
     const detectMiniApp = async () => {
       try {
         if (typeof sdk.isInMiniApp === "function") {
