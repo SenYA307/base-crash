@@ -31,6 +31,9 @@ export const metadata: Metadata = {
     description: "Match-3 on Base. Combos, streaks, leaderboard.",
     images: ["/assets/miniapp/og.png"],
   },
+  other: {
+    "base:app_id": "696cfddff22fe462e74c1384",
+  },
 };
 
 export default function RootLayout({
@@ -41,7 +44,6 @@ export default function RootLayout({
   return (
     <html lang="en">
       <head>
-        <meta name="base:app_id" content="696cfddff22fe462e74c1384" />
         <meta property="fc:miniapp" content="true" />
         <meta
           property="fc:miniapp:manifest"
